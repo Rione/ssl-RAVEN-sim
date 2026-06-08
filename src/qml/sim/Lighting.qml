@@ -17,10 +17,10 @@ Node {
         eulerRotation.y: -90
         brightness: lightIntensity
     }
-    DirectionalLight {
-        eulerRotation.x: 0
-        brightness: lightIntensity
-    }
+    // DirectionalLight {
+    //     eulerRotation.x: 0
+    //     brightness: lightIntensity
+    // }
     DirectionalLight {
         eulerRotation.x: 180
         brightness: lightIntensity
