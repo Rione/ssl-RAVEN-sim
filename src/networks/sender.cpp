@@ -40,6 +40,68 @@ void Sender::setCameraSplit(int numCameras, double overlapMm, double splitJitter
     splitJitterMm_ = splitJitterMm < 0.0 ? 0.0 : splitJitterMm;
 }
 
+void Sender::setOcclusion(bool enabled, double cameraHeightMm, double robotHeightMm) {
+    occlusionEnabled_ = enabled;
+    if (cameraHeightMm > 0.0) cameraHeightMm_ = cameraHeightMm;
+    if (robotHeightMm > 0.0) robotHeightMm_ = robotHeightMm;
+}
+
+bool Sender::isBallOccluded(int camera_id, const QVector3D &ball_position,
+                            const QList<QVector3D> &blue_positions,
+                            const QList<QVector3D> &yellow_positions) const {
+    if (!occlusionEnabled_) return false;
+
+    // Camera mount in field coords (ceiling above the center of its half).
+    const double Cx = (numCameras_ == 2) ? (camera_id == 0 ? -kHalfCenterX : kHalfCenterX) : 0.0;
+    const double Cy = 0.0;
+    const double Cz = cameraHeightMm_;
+
+    // Field coords: X = world x, Y = -world z, Z(height) = world y.
+    const double Bx = ball_position.x();
+    const double By = -ball_position.z();
+    double Bz = ball_position.y();
+    if (Bz < 0.0) Bz = 0.0;
+    if (Cz <= Bz) return false;  // camera must be above the ball
+
+    // Horizontal direction camera→ball.
+    const double vx = Bx - Cx;
+    const double vy = By - Cy;
+    const double a = vx * vx + vy * vy;
+    if (a < 1e-6) return false;  // ball straight under camera ⇒ nothing beside it blocks
+
+    // The ray drops below the robot top (height robotHeightMm_) only for t ≥ t0;
+    // a robot can only intersect the line of sight within its own height band.
+    double t0 = (Cz - robotHeightMm_) / (Cz - Bz);
+    if (t0 < 0.0) t0 = 0.0;
+    if (t0 >= 1.0) return false;
+
+    const double rr = robotRadiusMm_;
+    auto blockedBy = [&](const QList<QVector3D> &team) {
+        for (const auto &r : team) {
+            const double Rx = r.x();
+            const double Ry = r.y();
+            // Ray horizontal P(t) = C + t·v. Solve |P(t) − R| = rr (cylinder).
+            const double fx = Cx - Rx;
+            const double fy = Cy - Ry;
+            const double b = 2.0 * (fx * vx + fy * vy);
+            const double c = fx * fx + fy * fy - rr * rr;
+            const double disc = b * b - 4.0 * a * c;
+            if (disc <= 0.0) continue;  // ray misses the robot footprint
+            const double sq = std::sqrt(disc);
+            const double tEnter = (-b - sq) / (2.0 * a);
+            const double tExit  = (-b + sq) / (2.0 * a);
+            // Inside cylinder for t∈[tEnter,tExit]; below robot top for t≥t0;
+            // between camera and ball for t∈(0,1). The 0.98 cap excludes a robot
+            // sitting essentially at the ball (e.g. its own dribbler).
+            const double lo = std::max(tEnter, t0);
+            const double hi = std::min(tExit, 1.0);
+            if (lo < hi && lo < 0.98) return true;
+        }
+        return false;
+    };
+    return blockedBy(blue_positions) || blockedBy(yellow_positions);
+}
+
 void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions) {
     t_capture = (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() - start_time)/1000.0;
     // t_capture += 1/60.0;
@@ -95,8 +157,12 @@ void Sender::setDetectionInfo(SSL_DetectionFrame &detection, int camera_id, int 
 
     // Do not emit a ball detection with off-field/garbage coordinates
     // (e.g. the dribble "park" sentinel at ~100000). Mirrors ssl-Raven's CamFilter guard.
+    // Also drop it when a robot occludes this camera's line of sight to the ball,
+    // so a ball hidden behind a robot disappears from that camera (and entirely
+    // when no other camera can see it — typically near the field edges).
     if (std::abs(ball_position.x()) < 20000.0f && std::abs(ball_position.z()) < 20000.0f
-            && inCamera(ball_position.x())) {
+            && inCamera(ball_position.x())
+            && !isBallOccluded(camera_id, ball_position, blue_positions, yellow_positions)) {
         SSL_DetectionBall* ball = detection.add_balls();
         ball->set_confidence(1.0);
         ball->set_x(ball_position.x());
@@ -271,10 +337,10 @@ SSL_GeometryData Sender::setGeometryInfo() {
         // Place each camera over the center of the half it covers (left/right),
         // so the calibration matches the detection split (single cam ⇒ center).
         double camTx = 0.0;
-        if (numCameras_ == 2) camTx = (i == 0) ? -3000.0 : 3000.0;
+        if (numCameras_ == 2) camTx = (i == 0) ? -kHalfCenterX : kHalfCenterX;
         camera->set_tx(camTx);
         camera->set_ty(1250);
-        camera->set_tz(3500);
+        camera->set_tz(cameraHeightMm_);
         camera->set_derived_camera_world_tx(camTx);
         camera->set_derived_camera_world_ty(0);
         camera->set_derived_camera_world_tz(0);

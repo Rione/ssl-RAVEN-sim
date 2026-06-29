@@ -47,6 +47,7 @@ int main() {
 
     Sender sender(kAddr, kPort);
     sender.setCameraSplit(/*numCameras=*/2, /*overlapMm=*/500.0, /*splitJitterMm=*/0.0);
+    sender.setOcclusion(false, 0, 0);  // isolate the split feature from occlusion
 
     // x: left=-3000 (cam0), center=0 (both), right=+2000 (cam1)
     QList<QVector3D> blue   = {QVector3D(-3000, 0, 0), QVector3D(0, 0, 0), QVector3D(2000, 0, 0)};

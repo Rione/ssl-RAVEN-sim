@@ -31,6 +31,11 @@ Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_
     double visionOverlapMm = config.value("Vision/OverlapMm", 500.0).toDouble();
     double visionSplitJitterMm = config.value("Vision/SplitJitterMm", 200.0).toDouble();
     sender->setCameraSplit(visionCameras, visionOverlapMm, visionSplitJitterMm);
+    // Ball occlusion by robots blocking a camera's line of sight.
+    bool occlusionEnabled = config.value("Vision/OcclusionEnabled", true).toBool();
+    double cameraHeightMm = config.value("Vision/CameraHeightMm", 4000.0).toDouble();
+    double robotHeightMm = config.value("Vision/RobotHeightMm", 150.0).toDouble();
+    sender->setOcclusion(occlusionEnabled, cameraHeightMm, robotHeightMm);
     visionReceiver = new VisionReceiver(this);
     controlBlueReceiver = new ControlBlueReceiver(this);
     controlYellowReceiver = new ControlYellowReceiver(this);
