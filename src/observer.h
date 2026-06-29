@@ -233,6 +233,15 @@ private:
     float actTauAngularSec = 0.0f;
     float actDeadTimeLinearSec = 0.0f;
     float actDeadTimeAngularSec = 0.0f;
+
+    // Vision camera frame rate (each camera). Driven by its own self-correcting
+    // timer (not the variable sim tick) so the long-run average is exactly
+    // visionFps_ fps per camera regardless of render hitches.
+    double visionFps_ = 60.0;
+    QTimer* visionTimer = nullptr;
+    QElapsedTimer visionEpoch;
+    qint64 visionFrameCount = 0;
+    void sendVisionFrame();
 };
 
 #endif // OBSERVER_H

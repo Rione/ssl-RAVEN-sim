@@ -36,6 +36,9 @@ Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_
     double cameraHeightMm = config.value("Vision/CameraHeightMm", 4000.0).toDouble();
     double robotHeightMm = config.value("Vision/RobotHeightMm", 150.0).toDouble();
     sender->setOcclusion(occlusionEnabled, cameraHeightMm, robotHeightMm);
+    // Per-camera vision frame rate (default 60 fps each).
+    visionFps_ = config.value("Vision/CameraFps", 60.0).toDouble();
+    if (visionFps_ <= 0.0) visionFps_ = 60.0;
     visionReceiver = new VisionReceiver(this);
     controlBlueReceiver = new ControlBlueReceiver(this);
     controlYellowReceiver = new ControlYellowReceiver(this);
@@ -97,6 +100,15 @@ Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_
     simTimer->setTimerType(Qt::PreciseTimer);
     connect(simTimer, &QTimer::timeout, this, &Observer::updateSimulator);
     simTimer->start(1000 / 60);
+
+    // Dedicated vision clock: single-shot, rescheduled by sendVisionFrame() to
+    // hold an exact average of visionFps_ fps per camera.
+    visionTimer = new QTimer(this);
+    visionTimer->setTimerType(Qt::PreciseTimer);
+    visionTimer->setSingleShot(true);
+    connect(visionTimer, &QTimer::timeout, this, &Observer::sendVisionFrame);
+    visionEpoch.start();
+    visionTimer->start(0);
 }
 
 void Observer::visionReceive(const mocSim_Packet& packet) {
@@ -290,7 +302,28 @@ void Observer::updateSimulator() {
         }
     }
     emit updateSimulationSignal();
+    // Vision is emitted by visionTimer (sendVisionFrame), not here, so its rate
+    // is the configured per-camera fps independent of this tick's jitter.
+}
+
+void Observer::sendVisionFrame() {
     sender->send(1, ballPosition, bluePositions, yellowPositions);
+    visionFrameCount++;
+
+    // Self-correcting schedule: aim each frame at frameCount/fps from the epoch,
+    // so the long-run average is exactly visionFps_ even if individual frames are
+    // late. Alternating 16/17 ms intervals average to 16.667 ms (= 60 fps).
+    qint64 targetMs = llround(visionFrameCount * 1000.0 / visionFps_);
+    qint64 elapsed = visionEpoch.elapsed();
+    qint64 delay = targetMs - elapsed;
+    if (delay < -200) {  // fell far behind (long stall) → resync, don't burst
+        visionEpoch.restart();
+        visionFrameCount = 0;
+        delay = 0;
+    } else if (delay < 0) {
+        delay = 0;  // a little late → fire immediately to catch up
+    }
+    visionTimer->start(static_cast<int>(delay));
 }
 
 void Observer::emitEncoderFeedback(const QList<QVector3D> &positions,
