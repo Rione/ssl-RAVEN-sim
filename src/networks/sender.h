@@ -62,6 +62,7 @@ private:
 
     quint16 port;
     string address;
+    int sendErrorCount_ = 0;  // throttles repeated vision-send error logging
 
     // Camera coverage split configuration.
     int numCameras_ = 2;

@@ -17,6 +17,9 @@ Sender::Sender(const string address, quint16 port, QObject *parent) :
     loop_time(0)
 {
     socket_.open(boost::asio::ip::udp::v4());
+    // RAVEN may run on the same host; keep multicast loopback on so it receives.
+    boost::system::error_code ec;
+    socket_.set_option(boost::asio::ip::multicast::enable_loopback(true), ec);
 
     captureCount = 0;
     geometryCount = 0;
@@ -137,7 +140,20 @@ void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue
             std::cerr << "Failed to serialize command." << std::endl;
             return;
         }
-        socket_.send_to(boost::asio::buffer(serializedData), endpoint_);
+        // Non-throwing send: with no multicast subscriber yet there may be no
+        // route to the group (EADDRNOTAVAIL). Swallow it (throttled log) instead
+        // of letting the exception terminate the whole GUI; delivery resumes once
+        // a receiver (RAVEN) joins the group.
+        boost::system::error_code ec;
+        socket_.send_to(boost::asio::buffer(serializedData), endpoint_, 0, ec);
+        if (ec) {
+            if (sendErrorCount_++ % 600 == 0) {
+                std::cerr << "[Sender] vision send failed (" << ec.message()
+                          << ") — no multicast route/subscriber yet?" << std::endl;
+            }
+        } else {
+            sendErrorCount_ = 0;
+        }
     }
     geometryCount++;
     captureCount++;
