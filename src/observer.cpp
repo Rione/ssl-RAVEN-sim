@@ -25,6 +25,12 @@ Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_
     onboardCameraHeight = config.value("Camera/OnboardFrameHeight", 480).toInt();
 
     sender = new Sender(visionMulticastAddress.toStdString(), visionMulticastPort, this);
+    // Vision camera coverage: split the field across multiple cameras with a
+    // randomly-jittered, overlapping seam to mimic a real ssl-vision setup.
+    int visionCameras = config.value("Vision/NumCameras", 2).toInt();
+    double visionOverlapMm = config.value("Vision/OverlapMm", 500.0).toDouble();
+    double visionSplitJitterMm = config.value("Vision/SplitJitterMm", 200.0).toDouble();
+    sender->setCameraSplit(visionCameras, visionOverlapMm, visionSplitJitterMm);
     visionReceiver = new VisionReceiver(this);
     controlBlueReceiver = new ControlBlueReceiver(this);
     controlYellowReceiver = new ControlYellowReceiver(this);

@@ -34,10 +34,25 @@ void Sender::setPort(string address, quint16 newPort) {
     endpoint_ = boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(address), port);
 }
 
+void Sender::setCameraSplit(int numCameras, double overlapMm, double splitJitterMm) {
+    numCameras_ = (numCameras == 1) ? 1 : 2;  // only 1 or 2 supported
+    overlapMm_ = overlapMm < 0.0 ? 0.0 : overlapMm;
+    splitJitterMm_ = splitJitterMm < 0.0 ? 0.0 : splitJitterMm;
+}
+
 void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions) {
     t_capture = (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() - start_time)/1000.0;
     // t_capture += 1/60.0;
-    for (int i = 0; i < 1; i++) {
+
+    // Randomly shift the split line each frame so the overlap band wanders, the
+    // way real adjacent cameras hand objects off across an imperfect seam.
+    double splitX = 0.0;
+    if (numCameras_ == 2 && splitJitterMm_ > 0.0) {
+        std::uniform_real_distribution<double> jitter(-splitJitterMm_, splitJitterMm_);
+        splitX = jitter(splitRng_);
+    }
+
+    for (int i = 0; i < numCameras_; i++) {
         SSL_WrapperPacket packet;
 
         SSL_DetectionFrame detection;
@@ -45,15 +60,16 @@ void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue
         detection.set_t_capture(t_capture);
         detection.set_t_sent(t_capture);
         detection.set_camera_id(i);
-        // if (i == 0)
-        setDetectionInfo(detection, i, ball_position, blue_positions, yellow_positions);
+        setDetectionInfo(detection, i, numCameras_, splitX, overlapMm_,
+                         ball_position, blue_positions, yellow_positions);
 
         packet.mutable_detection()->CopyFrom(detection);
 
-        if (geometryCount % 1000 == 0) {
+        // Attach geometry on one camera only to avoid duplicate field data.
+        if (i == 0 && geometryCount % 1000 == 0) {
             packet.mutable_geometry()->CopyFrom(setGeometryInfo());
-        } 
-        
+        }
+
         std::string serializedData;
         if (!packet.SerializeToString(&serializedData)) {
             std::cerr << "Failed to serialize command." << std::endl;
@@ -65,10 +81,22 @@ void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue
     captureCount++;
 }
 
-void Sender::setDetectionInfo(SSL_DetectionFrame &detection, int camera_id, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions) {
+void Sender::setDetectionInfo(SSL_DetectionFrame &detection, int camera_id, int numCameras,
+                              double splitX, double overlapMm, QVector3D ball_position,
+                              QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions) {
+    // Whether an object at world-x belongs to this camera's coverage. Camera 0
+    // owns the left half (x ≤ split), camera 1 the right half (x ≥ split); the
+    // ±overlap band around the split line is reported by BOTH cameras.
+    auto inCamera = [&](double x) -> bool {
+        if (numCameras <= 1) return true;
+        if (camera_id == 0) return x <= splitX + overlapMm;
+        return x >= splitX - overlapMm;
+    };
+
     // Do not emit a ball detection with off-field/garbage coordinates
     // (e.g. the dribble "park" sentinel at ~100000). Mirrors ssl-Raven's CamFilter guard.
-    if (std::abs(ball_position.x()) < 20000.0f && std::abs(ball_position.z()) < 20000.0f) {
+    if (std::abs(ball_position.x()) < 20000.0f && std::abs(ball_position.z()) < 20000.0f
+            && inCamera(ball_position.x())) {
         SSL_DetectionBall* ball = detection.add_balls();
         ball->set_confidence(1.0);
         ball->set_x(ball_position.x());
@@ -77,36 +105,33 @@ void Sender::setDetectionInfo(SSL_DetectionFrame &detection, int camera_id, QVec
         ball->set_pixel_x(0);
         ball->set_pixel_y(0);
     }
-    
-    for (int i = 0; i < blue_positions.size(); ++i) {
-        // if ((blue_positions[i].x() > 0 && camera_id == 0) || (blue_positions[i].x() < 0 && camera_id == 1)) {
-            SSL_DetectionRobot* robot = detection.add_robots_blue();
-            robot->set_robot_id(i);
-            robot->set_confidence(1.0);
-            robot->set_x(blue_positions[i].x());
-            robot->set_y(blue_positions[i].y());
-            float tempOrientation = blue_positions[i].z();
-            tempOrientation = fmod(tempOrientation + 180, 360) - 180; // Normalize to [-180, 180]
-            robot->set_orientation(tempOrientation*M_PI/180);
-            robot->set_pixel_x(0);
-            robot->set_pixel_y(0);
-            robot->set_height(0);
 
-        // }
+    for (int i = 0; i < blue_positions.size(); ++i) {
+        if (!inCamera(blue_positions[i].x())) continue;
+        SSL_DetectionRobot* robot = detection.add_robots_blue();
+        robot->set_robot_id(i);
+        robot->set_confidence(1.0);
+        robot->set_x(blue_positions[i].x());
+        robot->set_y(blue_positions[i].y());
+        float tempOrientation = blue_positions[i].z();
+        tempOrientation = fmod(tempOrientation + 180, 360) - 180; // Normalize to [-180, 180]
+        robot->set_orientation(tempOrientation*M_PI/180);
+        robot->set_pixel_x(0);
+        robot->set_pixel_y(0);
+        robot->set_height(0);
     }
 
     for (int i = 0; i < yellow_positions.size(); ++i) {
-        // if ((yellow_positions[i].x() > 0 && camera_id == 0) || (yellow_positions[i].x() < 0 && camera_id == 1)) {
-            SSL_DetectionRobot* robot = detection.add_robots_yellow();
-            robot->set_robot_id(i);
-            robot->set_confidence(1.0);
-            robot->set_x(yellow_positions[i].x());
-            robot->set_y(yellow_positions[i].y());
-            robot->set_orientation(yellow_positions[i].z()*M_PI/180);
-            robot->set_pixel_x(0);
-            robot->set_pixel_y(0);
-            robot->set_height(0);
-        // }
+        if (!inCamera(yellow_positions[i].x())) continue;
+        SSL_DetectionRobot* robot = detection.add_robots_yellow();
+        robot->set_robot_id(i);
+        robot->set_confidence(1.0);
+        robot->set_x(yellow_positions[i].x());
+        robot->set_y(yellow_positions[i].y());
+        robot->set_orientation(yellow_positions[i].z()*M_PI/180);
+        robot->set_pixel_x(0);
+        robot->set_pixel_y(0);
+        robot->set_height(0);
     }
 }
 
@@ -232,7 +257,7 @@ SSL_GeometryData Sender::setGeometryInfo() {
     rightFieldLeftPenaltyStretch->mutable_p2()->CopyFrom(point);
     rightFieldLeftPenaltyStretch->set_thickness(10);
 
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < numCameras_; i++) {
         SSL_GeometryCameraCalibration* camera = geometry.add_calib();
         camera->set_camera_id(i);
         camera->set_focal_length(500.0);
@@ -243,10 +268,14 @@ SSL_GeometryData Sender::setGeometryInfo() {
         camera->set_q1(-0.7);
         camera->set_q2(0.0);
         camera->set_q3(0.0);
-        camera->set_tx(0.0);
+        // Place each camera over the center of the half it covers (left/right),
+        // so the calibration matches the detection split (single cam ⇒ center).
+        double camTx = 0.0;
+        if (numCameras_ == 2) camTx = (i == 0) ? -3000.0 : 3000.0;
+        camera->set_tx(camTx);
         camera->set_ty(1250);
         camera->set_tz(3500);
-        camera->set_derived_camera_world_tx(0);
+        camera->set_derived_camera_world_tx(camTx);
         camera->set_derived_camera_world_ty(0);
         camera->set_derived_camera_world_tz(0);
         camera->set_pixel_image_width(780);
