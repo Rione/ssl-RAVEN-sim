@@ -22,7 +22,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         set(CMAKE_PREFIX_PATH "/usr/local/opt/boost@1.85/" ${CMAKE_PREFIX_PATH})
     endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # Linux settings here
+    # Ubuntu 24.04: apt install qt6-quick3d-dev qt6-quick3dphysics-dev qt6-shadertools-dev
+    #               libprotobuf-dev protobuf-compiler libboost-dev ninja-build
+    # No extra prefix paths needed — apt packages provide CMake configs.
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     # Windows (MinGW) settings
     # Dependencies installed via vcpkg:
