@@ -37,6 +37,9 @@ class Observer : public QObject {
     Q_PROPERTY(int blueRobotCount READ getBlueRobotCount WRITE setBlueRobotCount NOTIFY settingChanged)
     Q_PROPERTY(int yellowRobotCount READ getYellowRobotCount WRITE setYellowRobotCount NOTIFY settingChanged)
     Q_PROPERTY(float ballRestitution READ getBallRestitution WRITE setBallRestitution NOTIFY settingChanged)
+    // Kinetic (dynamic) friction coefficient used by the ball's slip-phase friction.
+    Q_PROPERTY(float ballDynamicFriction READ getBallDynamicFriction WRITE setBallDynamicFriction NOTIFY settingChanged)
+    // Rolling resistance coefficient used by the ball's rolling-phase friction.
     Q_PROPERTY(float rollingFriction READ getRollingFriction WRITE setRollingFriction NOTIFY settingChanged)
     Q_PROPERTY(float kickerFriction READ getKickerFriction WRITE setKickerFriction NOTIFY settingChanged)
     Q_PROPERTY(float gravity READ getGravity WRITE setGravity NOTIFY settingChanged)
@@ -102,6 +105,7 @@ public:
     int getBlueRobotCount() const { return blueRobotCount; }
     int getYellowRobotCount() const { return yellowRobotCount; }
     float getBallRestitution() const { return ballRestitution; }
+    float getBallDynamicFriction() const { return ballDynamicFriction; }
     float getRollingFriction() const { return rollingFriction; }
     float getKickerFriction() const { return kickerFriction; }
     float getGravity() const { return gravity; }
@@ -127,6 +131,7 @@ public:
     void setBlueRobotCount(int count);
     void setYellowRobotCount(int count);
     void setBallRestitution(float restitution);
+    void setBallDynamicFriction(float friction);
     void setRollingFriction(float friction);
     void setKickerFriction(float friction);
     void setGravity(float gravity);
