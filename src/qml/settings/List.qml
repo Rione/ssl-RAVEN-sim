@@ -30,9 +30,9 @@ Item {
         // ListElement { name: "Ball Radius"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 0.1; MaxValue: 0.5 }
         // ListElement { name: "Ball Mass"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 0.043; MaxValue: 10 }
         // ListElement { name: "Ball Static Friction"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 0.11; MaxValue: 10 }
-        // ListElement { name: "Ball Dynamic Friction"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 0.11; MaxValue: 10 }
+        ListElement { name: "Ball Dynamic Friction"; detail: "Kinetic friction while the ball slips"; slider: true; toggle: false; combo: false; InitValue: 0.3; MaxValue: 1 }
         ListElement { name: "Ball Restitution"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 1.0; MaxValue: 1 }
-        ListElement { name: "Rolling Friction"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 0.02; MaxValue: 1 }
+        ListElement { name: "Rolling Friction"; detail: "Rolling resistance once the ball rolls"; slider: true; toggle: false; combo: false; InitValue: 0.05; MaxValue: 1 }
         ListElement { name: "Kicker Friction"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 0.8; MaxValue: 1 }
     }
     ListModel {

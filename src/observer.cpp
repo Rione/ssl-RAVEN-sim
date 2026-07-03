@@ -220,6 +220,11 @@ void Observer::setBallRestitution(float restitution) {
     config.setValue("Physics/BallRestitution", qRound(restitution*100)/100.0);
     emit settingChanged();
 }
+void Observer::setBallDynamicFriction(float friction) {
+    ballDynamicFriction = friction;
+    config.setValue("Physics/BallDynamicFriction", qRound(friction*100)/100.0);
+    emit settingChanged();
+}
 void Observer::setRollingFriction(float friction) {
     rollingFriction = friction;
     config.setValue("Physics/RollingFriction", qRound(friction*100)/100.0);

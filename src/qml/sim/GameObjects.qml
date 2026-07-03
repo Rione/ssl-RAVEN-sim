@@ -42,7 +42,13 @@ Node {
     property var ballModelNum: 1
     property var ballReset: false
     property int skipRollingFrictionFrames: 0
-    property real rollingFrictionImpulseScale: 3000.0
+    // Ball physical constants (scene units are mm). 42 mm diameter, ~46 g golf ball.
+    property real ballRadius: 21.0
+    property real ballMass: 46.0
+    // Angular velocity of the ball we integrate ourselves (rad/s). PhysX does not expose
+    // a readable angular velocity, and the field has no contact friction, so the slip/roll
+    // friction model owns the ball's spin. See applyBallFriction().
+    property var ballSpin: Qt.vector3d(0, 0, 0)
     property var ballPositions: new Array(ballModelNum).fill(Qt.vector4d(0, 0, 0, 0))
     MotionControl {
         id: motionControl
@@ -348,6 +354,14 @@ Node {
         position: Qt.vector3d(0, 0, 0)
         sendContactReports: true
         physicsMaterial: ballMaterial
+        // Explicit mass/inertia so the friction model's impulses (J = m*dv) produce the
+        // intended deceleration exactly, independent of the engine's default density.
+        // Solid-sphere inertia I = (2/5) m R^2 about every axis.
+        massMode: DynamicRigidBody.MassAndInertiaTensor
+        mass: ballMass
+        inertiaTensor: Qt.vector3d(0.4 * ballMass * ballRadius * ballRadius,
+                                   0.4 * ballMass * ballRadius * ballRadius,
+                                   0.4 * ballMass * ballRadius * ballRadius)
         collisionShapes: [
             SphereShape {
                 diameter: 42
@@ -440,14 +454,19 @@ Node {
                 && Math.abs(ball.position.x) < 50000
                 && Math.abs(ball.position.z) < 50000) {
             ball.setLinearVelocity(pendingKickVelocity);
+            // The ball leaves the kicker with no spin; the slip-friction phase spins it up.
+            ballSpin = Qt.vector3d(0, 0, 0);
+            ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
             pendingKickVelocity = null;
         }
         if (skipRollingFrictionFrames > 0)
             skipRollingFrictionFrames--;
-        // Decelerate the rolling ball so a kick doesn't roll forever off the field
-        // (and escape past the boundary walls into huge vision coordinates).
+        // Friction: a no-spin kick slides (kinetic friction decelerates + spins it up),
+        // then rolls (rolling resistance slowly bleeds off the rest), so it doesn't roll
+        // forever off the field (and escape past the boundary walls into huge vision
+        // coordinates).
         if (!teleopActive && skipRollingFrictionFrames == 0)
-            applyRollingFriction(ball, ballVelocity, ballAngularVelocity, timestep);
+            applyBallFriction(ball, ballVelocity, timestep);
         preBallPosition = ballPosition;
         preBallAngularPosition = ball.eulerRotation;
         ballReset = true;
@@ -465,26 +484,113 @@ Node {
         }
     }
 
-    function applyRollingFriction(ballBody, linearVelocity, angularVelocity, timestep)
+    // Slip/roll ball-friction model.
+    //
+    // A ball launched without spin first SLIDES: kinetic (dynamic) friction acts at the
+    // contact point opposite the slip velocity, decelerating the ball AND applying a
+    // torque that spins it up. The slip shrinks until the contact point stops moving
+    // (rolling without slipping), after which only the much smaller ROLLING RESISTANCE
+    // decelerates it. The ball therefore transitions slip -> roll while slowing down.
+    //
+    // Contact point (ball bottom, offset (0,-R,0) from the centre) velocity:
+    //   u = v + omega x (0,-R,0) = (vx + R*wz, vz - R*wx)
+    // Rolling-without-slipping means u = 0, i.e. wz = -vx/R, wx = vz/R.
+    // For a solid sphere (I = 2/5 m R^2) the slip magnitude decays at rate (7/2)*muK*g,
+    // giving the classic result that a no-spin launch reaches rolling at 5/7 of its
+    // launch speed.
+    //
+    // Parameters live in [Physics] of the config:
+    //   BallDynamicFriction (muK)  - kinetic/dynamic friction coefficient (slip phase)
+    //   RollingFriction     (cRoll) - rolling resistance coefficient (roll phase)
+    function applyBallFriction(ballBody, linearVelocity, timestep)
     {
-        // Skip when friction is disabled, or while the ball is parked off-field during
-        // dribbling (x ~ 100000): never nudge the park sentinel.
-        if (observer.rollingFriction <= 0 || timestep <= 0 || ballBody.position.x > 50000) {
+        let muK = observer.ballDynamicFriction;   // 動摩擦係数
+        let cRoll = observer.rollingFriction;     // 転がり抵抗係数
+
+        // Skip when both effects are off, on a bad dt, or while the ball is parked
+        // off-field during dribbling (x ~ 100000): never disturb the park sentinel.
+        if ((muK <= 0 && cRoll <= 0) || timestep <= 0 || ballBody.position.x > 50000) {
+            return;
+        }
+        // A chip in the air gets no ground friction until it lands.
+        if (ballBody.position.y > 30) {
             return;
         }
 
-        let vx = linearVelocity.x;
-        let vz = linearVelocity.z;
+        let dt = timestep > 1.0 ? timestep / 1000.0 : timestep;   // ms -> s (fixed 1/60 s)
+        let R = ballRadius;
+        let g = observer.gravity * 1000.0;   // m/s^2 -> mm/s^2, matching PhysicsWorld.gravity
+
+        // calcVelocity() reports mm-per-(frame ms), which is numerically m/s; convert to
+        // the scene's mm/s so it is consistent with R (mm) and g (mm/s^2).
+        let vx = linearVelocity.x * 1000.0;
+        let vz = linearVelocity.z * 1000.0;
+        let wx = ballSpin.x;
+        let wz = ballSpin.z;
+        let vx0 = vx;
+        let vz0 = vz;
+
         let speed = Math.sqrt(vx * vx + vz * vz);
-        // Skip when nearly stopped (avoids divide-by-zero below) or airborne (a chip
-        // shouldn't get rolling friction until it lands).
-        if (speed < 1.0 || ballPosition.y > 30) {
+        // Fully stop a crawling ball (there is no PhysX floor friction; friction is
+        // modelled entirely here, so nothing else would ever bring it to rest).
+        if (speed < 20.0) {
+            if (speed > 0.0) {
+                ballBody.applyCentralImpulse(Qt.vector3d(-ballMass * vx, 0, -ballMass * vz));
+            }
+            ballSpin = Qt.vector3d(0, 0, 0);
+            ballBody.setAngularVelocity(Qt.vector3d(0, 0, 0));
             return;
         }
 
-        let dt = timestep > 1.0 ? timestep / 1000.0 : timestep;
-        let impulse = Math.min(speed, observer.rollingFriction * rollingFrictionImpulseScale * dt);
-        ballBody.applyCentralImpulse(Qt.vector3d(-vx / speed * impulse, 0, -vz / speed * impulse));
+        // Slip velocity at the contact point.
+        let ux = vx + R * wz;
+        let uz = vz - R * wx;
+        let slip = Math.sqrt(ux * ux + uz * uz);
+
+        let remaining = dt;
+        const slipEps = 1.0;   // mm/s: below this the contact point is effectively rolling
+
+        if (slip > slipEps && muK > 0) {
+            // --- Slip phase (sub-stepped so we switch to rolling exactly when u -> 0). ---
+            let aK = muK * g;                 // linear deceleration magnitude
+            let slipDecayRate = 3.5 * aK;     // d|u|/dt for a solid sphere
+            let tRoll = slip / slipDecayRate; // time until rolling without slipping
+            let tSlip = Math.min(tRoll, remaining);
+
+            let nux = ux / slip;
+            let nuz = uz / slip;
+            // Linear: kinetic friction opposes the slip direction.
+            vx -= aK * tSlip * nux;
+            vz -= aK * tSlip * nuz;
+            // Angular: the same contact force spins the ball up.
+            //   dwx/dt = (5 aK)/(2R) * nuz,  dwz/dt = -(5 aK)/(2R) * nux
+            let angK = (2.5 * aK) / R;
+            wx += angK * tSlip * nuz;
+            wz -= angK * tSlip * nux;
+
+            remaining -= tSlip;
+        }
+
+        if (remaining > 0) {
+            // --- Roll phase: enforce the rolling constraint, then rolling resistance. ---
+            wz = -vx / R;
+            wx = vz / R;
+
+            let vmag = Math.sqrt(vx * vx + vz * vz);
+            if (vmag > 0.0 && cRoll > 0) {
+                let dv = Math.min(cRoll * g * remaining, vmag);
+                vx -= dv * vx / vmag;
+                vz -= dv * vz / vmag;
+                wz = -vx / R;   // keep spin consistent with the reduced linear speed
+                wx = vz / R;
+            }
+        }
+
+        // Apply the linear change as an impulse (J = m*dv) so PhysX still owns collision
+        // response; drive the visible spin directly from our tracked angular velocity.
+        ballBody.applyCentralImpulse(Qt.vector3d(ballMass * (vx - vx0), 0, ballMass * (vz - vz0)));
+        ballSpin = Qt.vector3d(wx, ballSpin.y, wz);
+        ballBody.setAngularVelocity(ballSpin);
     }
 
     function syncGameObjects() {
@@ -509,8 +615,10 @@ Node {
         if (target == "ball") {
             teleopVelocity = Qt.vector4d(0, 0, 0, 0);
             ballVelocity = Qt.vector4d(0, 0, 0, 0);
+            ballSpin = Qt.vector3d(0, 0, 0);
             pendingKickVelocity = null;
             ball.reset(result.scenePosition, Qt.vector3d(0, 0, 0));
+            ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
             ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
             preBallPosition = ballPosition;
             skipRollingFrictionFrames = 30;
@@ -668,6 +776,8 @@ Node {
 
     }
     function placeClothLineBall() {
+        ballSpin = Qt.vector3d(0, 0, 0);
+        ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
         if (Math.abs(ball.position.x) > 5500 && Math.abs(ball.position.z) > 4000) {
             ball.reset(Qt.vector3d(5500 * Math.sign(ball.position.x), 21, 4000 * Math.sign(ball.position.z)), Qt.vector3d(0, 0, 0));
             return;
