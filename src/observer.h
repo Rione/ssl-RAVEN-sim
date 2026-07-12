@@ -156,7 +156,9 @@ signals:
     void updateSenderData(QVector3D ball, QList<QVector3D> blue, QList<QVector3D> yellow);
     void updateSimulationSignal();
     void robotReplacementRequested(int id, bool isYellow, float sceneX, float sceneZ, float sceneRotYDeg);
-    void ballReplacementRequested(float sceneX, float sceneZ);
+    // hasVelocity is false when the Replacement didn't set vx/vy (they are optional
+    // in mocSim_BallReplacement); sceneVx/sceneVz are only meaningful when true.
+    void ballReplacementRequested(float sceneX, float sceneZ, bool hasVelocity, float sceneVx, float sceneVz);
 
 private:
     QSettings config;

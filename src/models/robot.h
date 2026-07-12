@@ -47,6 +47,13 @@ public:
     // Advance applied velocity one tick; getVel* then return the applied value.
     void advanceActuation(float dtSec);
 
+    // Stops all latched motion/kick/dribble commands and their actuation-delay
+    // pipeline immediately (no ramp-down). Called when this robot is teleported
+    // (Replacement): without this, the previous velocity command stays latched
+    // and the very next simulation tick re-applies it, driving the robot away
+    // from the spot it was just placed at.
+    void resetMotion();
+
     uint32_t getId() const;
     float getKickspeedx() const;
     float getKickspeedz() const;

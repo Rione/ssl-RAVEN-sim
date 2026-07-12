@@ -104,20 +104,42 @@ void Observer::visionReceive(const mocSim_Packet& packet) {
 
     // Robot/ball placement (Replacement). turnon=false (robot removal) is not
     // handled: this side always sends turnon=true.
+    bool blueReplaced = false;
+    bool yellowReplaced = false;
     for (const auto& robotReplacement : packet.replacement().robots()) {
         int id = robotReplacement.id();
         if (id < 0 || id >= MaxRobots) continue;
         float sceneX = robotReplacement.x() * 1000.0f;
         float sceneZ = -robotReplacement.y() * 1000.0f;
         float sceneRotYDeg = robotReplacement.dir() * 180.0 / M_PI - 90.0;
+        // Stop any velocity/kick/dribble command that was in flight for this robot
+        // *before* the teleport. Without this the previous command is still latched
+        // and gets re-applied on the very next tick, so the robot immediately drives
+        // off again and the teleport looks like it never took effect.
+        if (robotReplacement.yellowteam()) {
+            yellowRobots[id]->resetMotion();
+            yellowReplaced = true;
+        } else {
+            blueRobots[id]->resetMotion();
+            blueReplaced = true;
+        }
         emit robotReplacementRequested(id, robotReplacement.yellowteam(), sceneX, sceneZ, sceneRotYDeg);
     }
+    // Push the zeroed motion state to QML now (rather than waiting for the next
+    // incoming commands packet for that team), so botMovement() doesn't have a
+    // window where it still reads the stale, pre-reset velocity.
+    if (blueReplaced) emit blueRobotsChanged();
+    if (yellowReplaced) emit yellowRobotsChanged();
+
     if (packet.replacement().has_ball()) {
         const auto& ballReplacement = packet.replacement().ball();
         if (ballReplacement.has_x() && ballReplacement.has_y()) {
             float sceneX = ballReplacement.x() * 1000.0f;
             float sceneZ = -ballReplacement.y() * 1000.0f;
-            emit ballReplacementRequested(sceneX, sceneZ);
+            bool hasVelocity = ballReplacement.has_vx() || ballReplacement.has_vy();
+            float sceneVx = ballReplacement.has_vx() ? static_cast<float>(ballReplacement.vx() * 1000.0) : 0.0f;
+            float sceneVz = ballReplacement.has_vy() ? static_cast<float>(-ballReplacement.vy() * 1000.0) : 0.0f;
+            emit ballReplacementRequested(sceneX, sceneZ, hasVelocity, sceneVx, sceneVz);
         }
     }
 }
