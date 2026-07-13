@@ -42,9 +42,11 @@ Node {
     property var ballModelNum: 1
     property var ballReset: false
     property int skipRollingFrictionFrames: 0
-    // Ball physical constants (scene units are mm). 42 mm diameter, ~46 g golf ball.
+    // Ball physical constants (scene length units are mm). 42 mm diameter golf ball.
+    // Mass is kilograms — same unit as robot DynamicRigidBody.mass (2.5 kg).
+    // Was wrongly 46.0 (=46 kg, ~1000× SSL ball) which made the ball heavier than robots.
     property real ballRadius: 21.0
-    property real ballMass: 46.0
+    property real ballMass: 0.046
     // Angular velocity of the ball we integrate ourselves (rad/s). PhysX does not expose
     // a readable angular velocity, and the field has no contact friction, so the slip/roll
     // friction model owns the ball's spin. See applyBallFriction().
