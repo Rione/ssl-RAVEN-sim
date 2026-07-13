@@ -89,6 +89,11 @@ Node {
             // off again on the next tick.
             let color = isYellow ? yellow : blue;
             let frame = (isYellow ? yBotsFrame : bBotsFrame).children[id];
+            // m2 は config の robotCount 分しか Repeater3D を生まない。mirror-kickoff が
+            // 退避用に id 11..15 を送ると children[id] が undefined → TypeError だった。
+            if (!frame || typeof frame.reset !== "function") {
+                return;
+            }
             frame.reset(Qt.vector3d(sceneX, 0, sceneZ), Qt.vector3d(0, sceneRotYDeg, 0));
             // botMovement() derives the robot's "current velocity" from the pose delta
             // across one tick (poses[i] vs. prePoses[i]). Left untouched, prePoses[i]
