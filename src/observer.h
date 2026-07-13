@@ -139,7 +139,6 @@ public:
     void setCcdMode(bool mode);
     void setNumThreads(int threads);
     void setHideBallMode(bool mode);
-    void updateSimulator();
     
 signals:
     void blueRobotsChanged();
@@ -162,7 +161,6 @@ signals:
 
 private:
     QSettings config;
-    QTimer* simTimer = nullptr;
 
     VisionReceiver *visionReceiver;
     ControlBlueReceiver *controlBlueReceiver;
@@ -224,8 +222,6 @@ private:
                              float dtSec);
 
     FeedbackSender *feedbackSender = nullptr;
-    QElapsedTimer actuationClock;   // dt for the actuation delay model
-    QElapsedTimer feedbackClock;    // dt for encoder velocity differentiation
     QList<QVector3D> prevEncoderPositions;
 
     bool encoderEnabled = false;

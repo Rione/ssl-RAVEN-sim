@@ -79,13 +79,9 @@ Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_
         yellowRobots[i]->setActuationParams(actTauLinearSec, actTauAngularSec,
                                             actDeadTimeLinearSec, actDeadTimeAngularSec);
     }
-    actuationClock.start();
-    feedbackClock.start();
-
-    simTimer = new QTimer(this);
-    simTimer->setTimerType(Qt::PreciseTimer);
-    connect(simTimer, &QTimer::timeout, this, &Observer::updateSimulator);
-    simTimer->start(1000 / 60);
+    // NOTE: no wall-clock simulation timer. Vision/actuation/feedback are driven
+    // from updateObjects() once per physics frame (simulation time) — see the
+    // comment there.
 }
 
 void Observer::visionReceive(const mocSim_Packet& packet) {
@@ -299,31 +295,36 @@ void Observer::updateObjects(
     bluePositions = blue_positions.mid(0, blueRobotCount);
     yellowPositions = yellow_positions.mid(0, yellowRobotCount);
 
+    // updateObjects() runs once per PHYSICS frame (syncGameObjects <-
+    // PhysicsWorld::onFrameDone), each advancing exactly 1/60 s of simulation.
+    // Everything time-based below therefore uses the fixed simulation step, and
+    // vision is emitted from here — one packet per physics frame — instead of a
+    // wall-clock QTimer. With the old 60 Hz wall timer the vision rate and physics
+    // rate diverged whenever the render loop ran off 60 fps (headless/offscreen:
+    // ~50 fps → ~17% duplicate-pose frames + all speeds scaled by the ratio;
+    // occluded window: physics frozen while vision streamed the stale world).
+    const float simDtSec = 1.0f / 60.0f;
+
+    // Advance the actuation delay model before QML reads applied velocities next
+    // frame (first-order lag + dead time are simulation dynamics — sim time).
+    for (int i = 0; i < MaxRobots; ++i) {
+        blueRobots[i]->advanceActuation(simDtSec);
+        yellowRobots[i]->advanceActuation(simDtSec);
+    }
+
     // Synthesize RACOON-Pi feedback (wheel encoders + onboard camera + sensors)
-    // for the team RAVEN controls.
-    float fbDt = feedbackClock.nsecsElapsed() * 1e-9f;
-    feedbackClock.restart();
+    // for the team RAVEN controls. Differentiation dt = simulation step (the pose
+    // delta it differentiates is exactly one physics frame apart).
     emitEncoderFeedback(encoderTeamYellow ? yellowPositions : bluePositions,
                         encoderTeamYellow ? yellowBallCameraExists : blueBallCameraExists,
                         encoderTeamYellow ? yellowBallPixels : blueBallPixels,
                         encoderTeamYellow ? yBotBallContacts : bBotBallContacts,
-                        fbDt);
+                        simDtSec);
 
     if (isFoundBall)
         this->ballPosition = ball_position;
     emit sendBotBallContacts(bBotBallContacts, yBotBallContacts, blueBallCameraExists, yellowBallCameraExists, blueBallPixels, yellowBallPixels);
-}
 
-void Observer::updateSimulator() {
-    // Advance the actuation delay model before QML reads applied velocities.
-    float dtSec = actuationClock.nsecsElapsed() * 1e-9f;
-    actuationClock.restart();
-    if (dtSec > 0.0f && dtSec < 0.5f) {  // ignore startup / stalls
-        for (int i = 0; i < MaxRobots; ++i) {
-            blueRobots[i]->advanceActuation(dtSec);
-            yellowRobots[i]->advanceActuation(dtSec);
-        }
-    }
     emit updateSimulationSignal();
     sender->send(1, ballPosition, bluePositions, yellowPositions);
 }
