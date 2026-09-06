@@ -17,6 +17,11 @@ Sender::Sender(const string address, quint16 port, QObject *parent) :
     loop_time(0)
 {
     socket_.open(boost::asio::ip::udp::v4());
+    // Allow sending to broadcast addresses (e.g. 255.255.255.255 or subnet-directed
+    // broadcast) when the configured vision address is a broadcast address. Harmless
+    // for multicast/unicast destinations, so keep it always enabled.
+    boost::system::error_code ec;
+    socket_.set_option(boost::asio::socket_base::broadcast(true), ec);
 
     captureCount = 0;
     geometryCount = 0;
