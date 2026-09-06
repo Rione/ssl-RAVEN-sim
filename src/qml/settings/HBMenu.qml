@@ -2,60 +2,61 @@ import QtQuick
 
 Item {
     id: menuContainer
-    x: windowWidth - 40
-    width: 40
-    height: 40
+    x: windowWidth - 60
+    y: 48
+    width: 52
+    height: 52
+
+    Rectangle {
+        id: menuBackground
+        anchors.fill: parent
+        radius: 8
+        color: "#1A1A1A"
+        opacity: 0.85
+    }
 
     Rectangle {
         id: upLine
-        x: 0
-        y: 10
+        x: 11
+        y: 16
         width: 30
-        height: 4.2
-        radius: 2
+        height: 5
+        radius: 2.5
         color: "white"
-        opacity: 0.6
+        opacity: isMenuRunning ? 0.0 : 1.0
     }
 
     Rectangle {
         id: centerLine
-        x: 0
-        y: 20
+        x: 11
+        y: 24
         width: 30
-        height: 4.2
-        radius: 2
+        height: 5
+        radius: 2.5
         color: "white"
-        opacity: 0.6
+        opacity: isMenuRunning ? 0.0 : 1.0
     }
 
     Rectangle {
         id: downLine
-        x: 0
-        y: 30
+        x: 11
+        y: 32
         width: 30
-        height: 4.2
-        radius: 2
+        height: 5
+        radius: 2.5
         color: "white"
-        opacity: 0.6
+        opacity: isMenuRunning ? 0.0 : 1.0
     }
 
     MouseArea {
         anchors.fill: parent
         onClicked: {
             if (leftShadowRect.x === 0) {
-                upLine.opacity = 0.6;
-                centerLine.opacity = 0.6;
-                downLine.opacity = 0.6;
-
                 leftAnim.running = false;
                 rightAnim.running = false;
                 leftReverseAnim.running = true;
                 rightReverseAnim.running = true;
             } else {
-                upLine.opacity = 0.0;
-                centerLine.opacity = 0.0;
-                downLine.opacity = 0.0;
-
                 leftAnim.running = true;
                 rightAnim.running = true;
                 leftReverseAnim.running = false;
