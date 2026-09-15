@@ -521,10 +521,14 @@ Node {
                 let asksKick = color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0;
                 if (ballContestWinner !== null && (ballContestWinner.id != i || ballContestWinner.isYellow != isYellow)) {
                     kickDiag(kickKey, asksKick, "contest winner is " + (ballContestWinner.isYellow ? "y" : "b") + ballContestWinner.id);
+                    // The other robot has the ball: our mouth sensor must read empty. Leaving holds[i] stale kept RAVEN's
+                    // "touching" true and it fired into nothing for 0.5 s at a time (m33: 146 kick frames, 6 launches).
+                    color.holds[i] = false;
                     continue;   // another robot has the ball this frame (resolveBallContest)
                 }
                 if (dribbleInfo.id != -1 && (dribbleInfo.id != i || isYellow != dribbleInfo.isYellow)) {
                     kickDiag(kickKey, asksKick, "held by " + (dribbleInfo.isYellow ? "y" : "b") + dribbleInfo.id);
+                    color.holds[i] = false;
                     continue;
                 }
                 color.holds[i] = true;
