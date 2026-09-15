@@ -10,8 +10,6 @@ QtObject {
         }
         dribbleInfo.id = -1;
 
-        kickFlag = true;
-        kickTimer.running = true;
         color.kickspeeds[i].x *= observer.kickerFriction;
         color.kickspeeds[i].y *= observer.kickerFriction;
         // Defer the launch: store the velocity and let updateGameObjects() apply it only

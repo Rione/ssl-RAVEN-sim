@@ -33,7 +33,11 @@ Node {
     property real grabOffsetZ: 0
     property real grabLiftHeight: 80
 
-    property var kickFlag: false
+    // Per-robot kicker recharge, in physics frames (1 s at 60 Hz). A kick used to raise ONE global flag that
+    // blocked every robot's kick AND dribbling for 1 s: with an opponent that kicks often, the other team could
+    // hardly ever kick or hold the ball. The kicker capacitor is per robot, and the dribbler is independent of it.
+    property int kickRechargeFrames: 60
+    property var kickCooldown: ({})
     property var pendingKickVelocity: null
     property var preBallPosition: Qt.vector4d(0, 0, 0, 0)
     property var ballAngularVelocity: Qt.vector4d(0, 0, 0, 0)
@@ -445,9 +449,12 @@ Node {
                     continue;
                 }
                 color.holds[i] = true;
-                if (!kickFlag && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0)) {
+                let kickKey = (isYellow ? "y" : "b") + i;
+                let recharged = !(kickKey in kickCooldown) || kickCooldown[kickKey] <= 0;
+                if (recharged && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0)) {
+                    kickCooldown[kickKey] = kickRechargeFrames;
                     control.kick(color, frame, i, color.poses[i].w, ballVelocity);
-                } else if (color.spinners[i] > 0 && !kickFlag) {
+                } else if (color.spinners[i] > 0) {
                     control.dribble(frame, isYellow, i, botRadianBall, botDistanceBall, color);
                 }
             } else {
@@ -467,6 +474,11 @@ Node {
 
     function updateGameObjects(timestep) 
     {
+        for (let key in kickCooldown) {
+            if (kickCooldown[key] > 0) {
+                kickCooldown[key]--;
+            }
+        }
         ballVelocity = mu.calcVelocity(ballPosition, preBallPosition, timestep);
         ballAngularVelocity = mu.calcVelocity(ball.eulerRotation, preBallAngularPosition, timestep);
         let teleopSpeed = Math.sqrt(teleopVelocity.x * teleopVelocity.x
@@ -788,16 +800,6 @@ Node {
         ballPositions[0] = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
     }
 
-    Timer {
-        id: kickTimer
-        interval: 1000
-        repeat: false
-        running: false
-        onTriggered: {
-            kickFlag = false;
-            kickTimer.running = false;
-        }
-    }
     Component.onCompleted: {
         
         for (let i = 0; i < observer.blueRobotCount; i++) {
