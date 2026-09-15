@@ -38,6 +38,10 @@ Node {
     // hardly ever kick or hold the ball. The kicker capacitor is per robot, and the dribbler is independent of it.
     property int kickRechargeFrames: 60
     property var kickCooldown: ({})
+    // A dribbler cannot catch a ball that passes it faster than this (mm/s, relative to the robot). Without
+    // this limit a robot that kicks with its dribbler running re-catches the ball in the launch frame and the
+    // kick is swallowed (the ball is 95 mm in front of it and still inside the hold cone).
+    property real dribbleCatchMaxSpeedMmS: 1500
     property var pendingKickVelocity: null
     property var preBallPosition: Qt.vector4d(0, 0, 0, 0)
     property var ballAngularVelocity: Qt.vector4d(0, 0, 0, 0)
@@ -451,10 +455,14 @@ Node {
                 color.holds[i] = true;
                 let kickKey = (isYellow ? "y" : "b") + i;
                 let recharged = !(kickKey in kickCooldown) || kickCooldown[kickKey] <= 0;
+                let relVx = (ballVelocity.x - color.velocities[i].x) * 1000.0;   // m/s -> mm/s
+                let relVz = (ballVelocity.z - color.velocities[i].z) * 1000.0;
+                let catchable = Math.hypot(relVx, relVz) < dribbleCatchMaxSpeedMmS
+                        || (dribbleInfo.id == i && dribbleInfo.isYellow == isYellow);   // already held: keep it
                 if (recharged && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0)) {
                     kickCooldown[kickKey] = kickRechargeFrames;
                     control.kick(color, frame, i, color.poses[i].w, ballVelocity);
-                } else if (color.spinners[i] > 0) {
+                } else if (color.spinners[i] > 0 && catchable) {
                     control.dribble(frame, isYellow, i, botRadianBall, botDistanceBall, color);
                 }
             } else {
