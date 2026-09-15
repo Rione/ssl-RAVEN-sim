@@ -42,6 +42,12 @@ Node {
     // this limit a robot that kicks with its dribbler running re-catches the ball in the launch frame and the
     // kick is swallowed (the ball is 95 mm in front of it and still inside the hold cone).
     property real dribbleCatchMaxSpeedMmS: 1500
+    // Who may act on the ball this frame ({isYellow, id} or null). The ball can sit in several mouth cones at once
+    // (a face-to-face contest): a robot asking to kick wins (a kick is instantaneous), otherwise the nearest mouth.
+    // If the winner is not the current holder, the hold is released so the winner can dribble or kick the ball.
+    // Before, whoever registered the dribble first kept the ball for good and the other robot's kicks were
+    // silently refused although its sensor reported "holding".
+    property var ballContestWinner: null
     property var pendingKickVelocity: null
     property var preBallPosition: Qt.vector4d(0, 0, 0, 0)
     property var ballAngularVelocity: Qt.vector4d(0, 0, 0, 0)
@@ -423,6 +429,63 @@ Node {
         scale: Qt.vector3d(0.8, 0.01, 0.8)
     }
 
+    // Scene position of the ball: the physics body, or the holder's mouth while it is held (the body is parked).
+    function heldBallScenePosition() {
+        if (dribbleInfo.id == -1) {
+            return Qt.vector3d(ballPosition.x, ballPosition.y, ballPosition.z);
+        }
+        let frame = (dribbleInfo.isYellow ? yBotsFrame : bBotsFrame).children[dribbleInfo.id];
+        let w = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
+        return Qt.vector3d(frame.position.x + 95 * Math.cos(-w), 25, frame.position.z + 95 * Math.sin(-w));
+    }
+
+    function resolveBallContest() {
+        let bp = heldBallScenePosition();
+        let best = null;
+        let bestKick = false;
+        let bestDist = 1e9;
+        for (let team = 0; team < 2; team++) {
+            let isYellow = team == 1;
+            let color = isYellow ? yellow : blue;
+            let frames = isYellow ? yBotsFrame : bBotsFrame;
+            for (let i = 0; i < color.num; i++) {
+                let frame = frames.children[i];
+                if (!frame) {
+                    continue;
+                }
+                let w = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
+                let d = Math.hypot(frame.position.x - bp.x, frame.position.z - bp.z);
+                let rad = mu.normalizeRadian(Math.atan2(frame.position.z - bp.z, frame.position.x - bp.x) - Math.PI + w);
+                let inCone = d < 110 * Math.cos(Math.abs(rad)) && Math.abs(rad) < Math.PI / 15.0 && bp.y < 40;
+                if (!inCone) {
+                    continue;
+                }
+                let key = (isYellow ? "y" : "b") + i;
+                let recharged = !(key in kickCooldown) || kickCooldown[key] <= 0;
+                let wantsKick = recharged && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0);
+                if (!wantsKick && !(color.spinners[i] > 0 && recharged)) {
+                    continue;   // a robot that has just kicked neither kicks nor catches until it recharges
+                }
+                if (best === null || (wantsKick && !bestKick) || (wantsKick == bestKick && d < bestDist)) {
+                    best = { isYellow: isYellow, id: i };
+                    bestKick = wantsKick;
+                    bestDist = d;
+                }
+            }
+        }
+        ballContestWinner = best;
+        if (dribbleInfo.id != -1 && best !== null && (best.id != dribbleInfo.id || best.isYellow != dribbleInfo.isYellow)) {
+            // The holder loses the ball: the body goes back to the mouth as a free ball for this frame's botMovement.
+            let holderColor = dribbleInfo.isYellow ? yellow : blue;
+            let holderFrame = (dribbleInfo.isYellow ? yBotsFrame : bBotsFrame).children[dribbleInfo.id];
+            holderFrame.collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+            holderColor.holds[dribbleInfo.id] = false;
+            ball.reset(bp, Qt.vector3d(0, 0, 0));
+            ballPosition = Qt.vector4d(bp.x, bp.y, bp.z, 0);
+            dribbleInfo.id = -1;
+        }
+    }
+
     function botMovement(color, timestep, isYellow=false) {
         let botFrame = isYellow ? yBotsFrame : bBotsFrame;
 
@@ -449,6 +512,9 @@ Node {
                 }
             }
             if (botDistanceBall < 110 * Math.cos(Math.abs(botRadianBall)) && Math.abs(botRadianBall) < Math.PI/15.0 && ballPosition.y < 40) {
+                if (ballContestWinner !== null && (ballContestWinner.id != i || ballContestWinner.isYellow != isYellow)) {
+                    continue;   // another robot has the ball this frame (resolveBallContest)
+                }
                 if (dribbleInfo.id != -1 && (dribbleInfo.id != i || isYellow != dribbleInfo.isYellow)) {
                     continue;
                 }
@@ -462,7 +528,10 @@ Node {
                 if (recharged && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0)) {
                     kickCooldown[kickKey] = kickRechargeFrames;
                     control.kick(color, frame, i, color.poses[i].w, ballVelocity);
-                } else if (color.spinners[i] > 0 && catchable) {
+                } else if (color.spinners[i] > 0 && catchable && recharged) {
+                    // recharged: a robot that has just kicked does not re-catch the ball it launched (the body's reset
+                    // lands one frame later and the mouth test passes meanwhile; the ball is gone for real).
+
                     control.dribble(frame, isYellow, i, botRadianBall, botDistanceBall, color);
                 }
             } else {
@@ -519,6 +588,7 @@ Node {
         preBallAngularPosition = ball.eulerRotation;
         ballReset = true;
         
+        resolveBallContest();
         botMovement(blue, timestep);
         botMovement(yellow, timestep, true);
 
