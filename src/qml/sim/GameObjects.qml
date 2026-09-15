@@ -542,8 +542,9 @@ Node {
                         || (dribbleInfo.id == i && dribbleInfo.isYellow == isYellow);   // already held: keep it
                 if (recharged && asksKick) {
                     kickCooldown[kickKey] = kickRechargeFrames;
+                    // wall-clock ms so the line can be matched to RAVEN's MCAP (log_time) without guessing from positions
                     console.log("[kick] " + kickKey + " fires " + Math.round(color.kickspeeds[i].x) + "/" + Math.round(color.kickspeeds[i].y) + " mm/s at ball ("
-                            + Math.round(ballPosition.x) + ", " + Math.round(ballPosition.z) + ")");
+                            + Math.round(ballPosition.x) + ", " + Math.round(ballPosition.z) + ") t=" + Date.now());
                     control.kick(color, frame, i, color.poses[i].w, ballVelocity);
                 } else if (color.spinners[i] > 0 && catchable && recharged) {
                     // recharged: a robot that has just kicked does not re-catch the ball it launched (the body's reset
