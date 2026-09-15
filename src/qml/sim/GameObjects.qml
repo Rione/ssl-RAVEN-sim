@@ -517,21 +517,29 @@ Node {
                 }
             }
             if (botDistanceBall < 110 * Math.cos(Math.abs(botRadianBall)) && Math.abs(botRadianBall) < Math.PI/15.0 && ballPosition.y < 40) {
+                let kickKey = (isYellow ? "y" : "b") + i;
+                let asksKick = color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0;
                 if (ballContestWinner !== null && (ballContestWinner.id != i || ballContestWinner.isYellow != isYellow)) {
+                    kickDiag(kickKey, asksKick, "contest winner is " + (ballContestWinner.isYellow ? "y" : "b") + ballContestWinner.id);
                     continue;   // another robot has the ball this frame (resolveBallContest)
                 }
                 if (dribbleInfo.id != -1 && (dribbleInfo.id != i || isYellow != dribbleInfo.isYellow)) {
+                    kickDiag(kickKey, asksKick, "held by " + (dribbleInfo.isYellow ? "y" : "b") + dribbleInfo.id);
                     continue;
                 }
                 color.holds[i] = true;
-                let kickKey = (isYellow ? "y" : "b") + i;
                 let recharged = !(kickKey in kickCooldown) || kickCooldown[kickKey] <= 0;
+                if (asksKick && !recharged) {
+                    kickDiag(kickKey, true, "not recharged (" + kickCooldown[kickKey] + " frames left)");
+                }
                 let relVx = (ballVelocity.x - color.velocities[i].x) * 1000.0;   // m/s -> mm/s
                 let relVz = (ballVelocity.z - color.velocities[i].z) * 1000.0;
                 let catchable = Math.hypot(relVx, relVz) < dribbleCatchMaxSpeedMmS
                         || (dribbleInfo.id == i && dribbleInfo.isYellow == isYellow);   // already held: keep it
-                if (recharged && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0)) {
+                if (recharged && asksKick) {
                     kickCooldown[kickKey] = kickRechargeFrames;
+                    console.log("[kick] " + kickKey + " fires " + Math.round(color.kickspeeds[i].x) + "/" + Math.round(color.kickspeeds[i].y) + " mm/s at ball ("
+                            + Math.round(ballPosition.x) + ", " + Math.round(ballPosition.z) + ")");
                     control.kick(color, frame, i, color.poses[i].w, ballVelocity);
                 } else if (color.spinners[i] > 0 && catchable && recharged) {
                     // recharged: a robot that has just kicked does not re-catch the ball it launched (the body's reset
@@ -554,8 +562,23 @@ Node {
         }
     }
 
+    // Diagnostics: a robot with the ball in its mouth asked to kick but could not. Logged at most once per second per robot.
+    property var kickDiagLast: ({})
+    property int diagFrame: 0
+    function kickDiag(kickKey, asksKick, why) {
+        if (!asksKick) {
+            return;
+        }
+        let now = diagFrame;
+        if (!(kickKey in kickDiagLast) || now - kickDiagLast[kickKey] >= 60) {
+            kickDiagLast[kickKey] = now;
+            console.log("[kick] " + kickKey + " asks to kick but cannot: " + why);
+        }
+    }
+
     function updateGameObjects(timestep) 
     {
+        diagFrame++;
         for (let key in kickCooldown) {
             if (kickCooldown[key] > 0) {
                 kickCooldown[key]--;
