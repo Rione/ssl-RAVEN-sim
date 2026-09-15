@@ -51,6 +51,8 @@ Node {
     // a readable angular velocity, and the field has no contact friction, so the slip/roll
     // friction model owns the ball's spin. See applyBallFriction().
     property var ballSpin: Qt.vector3d(0, 0, 0)
+    // Tracked velocity of the previous frame (m/s, scene axes), for impact detection in applyBallFriction().
+    property var prevBallVelocity: Qt.vector3d(0, 0, 0)
     property var ballPositions: new Array(ballModelNum).fill(Qt.vector4d(0, 0, 0, 0))
     MotionControl {
         id: motionControl
@@ -557,6 +559,23 @@ Node {
         let vz0 = vz;
 
         let speed = Math.sqrt(vx * vx + vz * vz);
+
+        // Impact (wall, goal, robot): the velocity direction flipped or the speed jumped between two
+        // frames. The tracked spin still belongs to the motion BEFORE the impact, and the finite-
+        // difference velocity spans the impact, so applying slip friction here would drag the ball
+        // along its old spin and bend the rebound. Re-sync the spin to rolling with the new velocity
+        // and let this frame pass without a friction impulse.
+        let pvx = prevBallVelocity.x * 1000.0;
+        let pvz = prevBallVelocity.z * 1000.0;
+        let prevSpeed = Math.sqrt(pvx * pvx + pvz * pvz);
+        let impact = prevSpeed > 200.0 && speed > 200.0
+                && (vx * pvx + vz * pvz < 0.0 || speed > 1.5 * prevSpeed);
+        prevBallVelocity = linearVelocity;
+        if (impact) {
+            ballSpin = Qt.vector3d(vz / R, ballSpin.y, -vx / R);
+            ballBody.setAngularVelocity(ballSpin);
+            return;
+        }
         // Fully stop a crawling ball (there is no PhysX floor friction; friction is
         // modelled entirely here, so nothing else would ever bring it to rest).
         if (speed < 20.0) {
@@ -647,6 +666,7 @@ Node {
     function placeBall(scenePosition, velocity) {
         teleopVelocity = Qt.vector4d(0, 0, 0, 0);
         ballVelocity = Qt.vector4d(0, 0, 0, 0);
+        prevBallVelocity = Qt.vector3d(0, 0, 0);
         ballSpin = Qt.vector3d(0, 0, 0);
         pendingKickVelocity = null;
         ball.reset(scenePosition, Qt.vector3d(0, 0, 0));
@@ -657,11 +677,17 @@ Node {
         ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
         preBallPosition = ballPosition;
         skipRollingFrictionFrames = 30;
+        // Release the dribbler hold too: while dribbleInfo points at a robot, botMovement() forces
+        // that robot's ball distance/angle to "held" and the next dribble() would snap the ball
+        // back onto its dribbler, so a placement could never take the ball away from a holder.
+        dribbleInfo.id = -1;
         for (let i = 0; i < blue.num; i++) {
             bBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+            blue.holds[i] = false;
         }
         for (let i = 0; i < yellow.num; i++) {
             yBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+            yellow.holds[i] = false;
         }
     }
 
