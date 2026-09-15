@@ -48,6 +48,9 @@ Node {
     // Before, whoever registered the dribble first kept the ball for good and the other robot's kicks were
     // silently refused although its sensor reported "holding".
     property var ballContestWinner: null
+    // A challenger that only dribbles must be this much closer to the ball than the current holder to take it
+    // (mm). Without it two facing dribblers swap the ball every frame.
+    property real contestTakeoverMarginMm: 30
     property var pendingKickVelocity: null
     property var preBallPosition: Qt.vector4d(0, 0, 0, 0)
     property var ballAngularVelocity: Qt.vector4d(0, 0, 0, 0)
@@ -466,10 +469,12 @@ Node {
                 if (!wantsKick && !(color.spinners[i] > 0 && recharged)) {
                     continue;   // a robot that has just kicked neither kicks nor catches until it recharges
                 }
-                if (best === null || (wantsKick && !bestKick) || (wantsKick == bestKick && d < bestDist)) {
+                let isHolder = dribbleInfo.id == i && dribbleInfo.isYellow == isYellow;
+                let effective = isHolder ? d - contestTakeoverMarginMm : d;   // the holder keeps a small edge
+                if (best === null || (wantsKick && !bestKick) || (wantsKick == bestKick && effective < bestDist)) {
                     best = { isYellow: isYellow, id: i };
                     bestKick = wantsKick;
-                    bestDist = d;
+                    bestDist = effective;
                 }
             }
         }
