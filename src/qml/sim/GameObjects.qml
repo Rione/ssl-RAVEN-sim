@@ -510,6 +510,13 @@ Node {
 
             let botDistanceBall = Math.sqrt(Math.pow(frame.position.x - ballPosition.x, 2) + Math.pow(frame.position.z - ballPosition.z, 2));
             let botRadianBall = mu.normalizeRadian(Math.atan2(frame.position.z - ballPosition.z, frame.position.x - ballPosition.x) - Math.PI + color.poses[i].w);
+            // A robot that switched its dribbler off lets go of the ball. The holder's mouth test below is forced to
+            // pass, so without this the release branch can never run and the ball is carried for ever (the only way
+            // out was a kick). Keep holding while it asks to kick: the kick needs the ball in the mouth.
+            let asksKickNow = color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0;
+            if (!(color.spinners[i] > 0) && !asksKickNow) {
+                control.release(frame, isYellow, i, color);
+            }
             if (dribbleInfo.id != -1) {
                 if (isYellow == dribbleInfo.isYellow && i == dribbleInfo.id) {
                     botDistanceBall = 95;
