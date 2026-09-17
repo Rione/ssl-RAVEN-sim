@@ -16,14 +16,16 @@ Node {
         scale: Qt.vector3d(10, 10, 10)
         visible: !observer.lightStadiumMode
     }
-    // Walls and goal frames: wooden boards. The ball material (restitution 0.41) is combined with this by
-    // PhysX (average), giving a rebound of about half the approach speed. Before, `physicsMaterial` here
-    // referred to an id that does not exist, so the engine default applied by accident.
+    // Walls and goal frames: wooden boards. PhysX averages the two contacting materials, so the ball's
+    // rebound off a wall is (ball + wall) / 2. The ball now carries RAVEN's direct_kick restitution
+    // (0.8, so that ball vs robot comes out exactly at 0.8); 0.7 here keeps the wall rebound at the
+    // 0.75 that was tuned for it. Before, `physicsMaterial` here referred to an id that does not
+    // exist, so the engine default applied by accident.
     PhysicsMaterial {
         id: wallMaterial
         staticFriction: 0.3
         dynamicFriction: 0.3
-        restitution: 0.9
+        restitution: 0.7
     }
     PhysicsMaterial {
         id: fieldMaterial

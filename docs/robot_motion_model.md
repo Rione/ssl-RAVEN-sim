@@ -28,6 +28,33 @@ sim の台が指令どおり即座に動き、球が別の落ち方をしてい�
 書かれたキーだけが既定値を上書きする。`Enabled=false` でモデルを丸ごと切ると、
 従来の `MotionControl`（等方な加減速制限）経由の挙動に戻る。
 
+### ⚠ RAVEN 側とペアで設定する
+
+**sim だけ実機に寄せると、かえって悪くなる。** RAVEN の MPC と EKF は自分が読んだ
+`system_model` の台を前提に動くので、sim の台だけ変えると存在しない台に向けて制御することになる。
+0918 の「sim で全然うまく動かない」はこれだった。
+
+RAVEN は `Config.resolveSystemModelFileName()` が `is_real ? system_model_real.yaml :
+system_model_sim.yaml` と決め打ちで、per-robot の個体モデルは実機モードでしか引かない。
+つまり素の RAVEN は sim で**全機体に単一の `system_model_sim.yaml`** を使う
+（むだ時間 0.033 s・ゲイン 1.0・加速上限 3500）。ここに本ドキュメントの台
+（むだ時間 0.10〜0.15 s・ゲイン 0.57〜0.71・横の加速 1117〜1841）をぶつけると破綻する。
+
+対応は ssl-RAVEN 側の `feat/sim-per-robot-system-model`（`Config.systemModel(robotId)` の
+sim 経路で個体ファイルの `robot` 節だけをベースに重ねる）。個体ファイルは
+
+1. `system_model_sim_ID<n>.yaml` … sim 専用。世代クローン（ID 2/4/11 以外）はここ
+2. `system_model_real_<mac>_ID<n>.yaml` … ID が一致する実機の同定値（ID 2/4/11）
+
+の順に探す。1 の生成は **`tools/gen_robot_models.py`**:
+
+```bash
+python3 tools/gen_robot_models.py --write-raven <ssl-RAVEN>/app/config
+```
+
+このスクリプトが `[RobotModel.<id>]` と RAVEN の yaml を**同じ表から**出す。
+片方だけ手で直すと台がずれるので、値を変えるときは必ずここから。
+
 ### ID ごとの割り当て
 
 実機は 3 台ぶんしか同定値が無く、しかもそれぞれ**世代が違う**。
@@ -96,6 +123,19 @@ sim もそれに従う。v0 は `ballLaunchSpeed` が持ち、キック・速度
   加速ピーク 3971 / 1715 mm/s²、周速 2250 mm/s 打ち止め）。
 - `applyBallFriction` の積分（switch をまたぐフレームを刻む処理）は RAVEN の閉形式
   `restTravelDistance` と停止距離で 0.07% 以内まで一致する。
+- sim を実際に走らせた実測（ボールだけ、3000 mm/s で配置、vision から計測）でも、
+  同じ距離での速さが RAVEN の `speedAfterTravel` と **0.3〜−5%** で一致する。
+  距離が伸びるほど sim がわずかに遅い（8.8 m で −8.5%）ぶんは未解明で、転がり相に
+  a_roll の数 % ぶんの余分な減速が乗っている。
 - 台と球が組み合わさったときの挙動（MPC を実際に走らせたときの追従）は
   **RAVEN を繋いで走らせないと確かめられない**。まずは ID 2 / 4 / 11 を使って、
   実機のログと並べるのが早い。
+
+## 未解決
+
+- **ボールがロボットの口に正面から入ったときの跳ね返りが 0.8 にならない。**
+  0918 実測: 3000 mm/s でロボットへ撃つと、跳ね返りは 0.41 相当。材質は
+  球・ロボットとも `DirectKickNormalRestitution` (0.8) なので、PhysX の平均としては
+  0.8 のはず。口のドリブラ／取り合いの判定が噛んでいる可能性が高く、材質の問題とは
+  切り分けられていない。側面に当てたときの値は未計測。
+- 転がり相の −数 % の余分な減速（上記）。

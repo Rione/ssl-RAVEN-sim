@@ -5,3 +5,9 @@
 /assets/*
 !/assets/.gitkeep
 proto/pb_gen/*
+
+# git worktree (Claude の作業用)
+.claude/worktrees/
+
+# ワークツリーで本体の assets を指すシンボリックリンク (実体は追跡しない)
+/assets

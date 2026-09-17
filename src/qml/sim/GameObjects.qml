@@ -58,7 +58,14 @@ Node {
     property var ballVelocity: Qt.vector4d(0, 0, 0, 0)
     property var ballModelNum: 1
     property var ballReset: false
+    // 配置の直後、減速を止めておくフレーム数。ballVelocity は位置の差分なので、
+    // 瞬間移動をまたいだ 1 フレームは出鱈目な速さになる。それを摩擦に食わせないための
+    // 逃げで、必要なのは差分が綺麗になるまでの 2 フレームだけ。
+    // 以前は 30 (= 0.5 s) で、速度つきの配置 (RAVEN のフリーキック・ボール配置) のあいだ
+    // 球が完全に無摩擦で転がっていた。0918 実測: 3000 mm/s で置くと 0.45 s / 1350 mm を
+    // 一切減速せずに直進し、RAVEN の到達予測がそのぶん丸ごと外れていた。
     property int skipRollingFrictionFrames: 0
+    readonly property int placementSettleFrames: 2
     // Ball physical constants (scene length units are mm). 42 mm diameter golf ball.
     // Mass is kilograms — same unit as robot DynamicRigidBody.mass (2.5 kg).
     // Was wrongly 46.0 (=46 kg, ~1000× SSL ball) which made the ball heavier than robots.
@@ -422,15 +429,16 @@ Node {
 
     // ロボットの外装。RAVEN の ball_model.direct_kick を再現するための材質。
     //   tangent_retention = 1.0 … 接線方向は落ちない → 摩擦 0
-    //   normal_restitution    … 法線方向の反発。PhysX は 2 つの材質の平均を取るので、
-    //                           ball 側 (observer.ballRestitution、壁向けに詰めた値) との
-    //                           平均がちょうど normal_restitution になる値をこちらに入れる。
+    //   normal_restitution    … 法線方向の反発。PhysX は接触する 2 つの材質の平均を取るので、
+    //                           球もロボットも同じ値を持たせて平均を normal_restitution にする。
+    // 以前は ball 側を壁向けの値 (0.6) のままにして、その平均が 0.8 になる値をここに入れて
+    // いた。式としては合うが、ロボット同士の反発が 1.0 (完全弾性) になる副作用があった。
+    // 壁の跳ね返りは Field.qml の wallMaterial 側で調整する。
     PhysicsMaterial {
         id: botMaterial
         staticFriction: 0.0
         dynamicFriction: 0.0
-        restitution: Math.max(0.0, Math.min(1.0,
-                        2.0 * observer.ballNormalRestitution - observer.ballRestitution))
+        restitution: observer.ballNormalRestitution
     }
 
     DynamicRigidBody {
@@ -860,7 +868,7 @@ Node {
         ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
         ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
         preBallPosition = ballPosition;
-        skipRollingFrictionFrames = 30;
+        skipRollingFrictionFrames = placementSettleFrames;
         // Release the dribbler hold too: while dribbleInfo points at a robot, botMovement() forces
         // that robot's ball distance/angle to "held" and the next dribble() would snap the ball
         // back onto its dribbler, so a placement could never take the ball away from a holder.
