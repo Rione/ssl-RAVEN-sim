@@ -78,10 +78,29 @@ Node {
             }
         }
         function onRobotReplacementRequested(id, isYellow, sceneX, sceneZ, sceneRotYDeg) {
-            (isYellow ? yBotsFrame : bBotsFrame).children[id].reset(Qt.vector3d(sceneX, 0, sceneZ), Qt.vector3d(0, sceneRotYDeg, 0));
+            // reset() (not just assigning position/eulerRotation) is required to actually
+            // warp a DynamicRigidBody's physics pose: for a dynamic body, physics owns the
+            // transform, so plain property assignment wouldn't move the PhysX actor. This
+            // also zeroes the body's linear/angular velocity. The observer has already
+            // stopped any latched velocity command for this robot (Robot::resetMotion(),
+            // called before this signal), so it stays put instead of immediately driving
+            // off again on the next tick.
+            let color = isYellow ? yellow : blue;
+            let frame = (isYellow ? yBotsFrame : bBotsFrame).children[id];
+            frame.reset(Qt.vector3d(sceneX, 0, sceneZ), Qt.vector3d(0, sceneRotYDeg, 0));
+            // botMovement() derives the robot's "current velocity" from the pose delta
+            // across one tick (poses[i] vs. prePoses[i]). Left untouched, prePoses[i]
+            // still holds the pre-teleport pose, so the position jump reads as a huge
+            // one-tick velocity and MotionControl's accel-limiter spends a few frames
+            // coasting it back down to the (now zero) commanded speed instead of the
+            // robot being still immediately. Seeding prePoses/preVelocities to the
+            // just-placed, at-rest pose avoids that phantom delta.
+            let headingRad = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
+            color.prePoses[id] = Qt.vector4d(frame.position.x, frame.position.y, frame.position.z, headingRad);
+            color.preVelocities[id] = Qt.vector4d(0, 0, 0, 0);
         }
-        function onBallReplacementRequested(sceneX, sceneZ) {
-            ball.reset(Qt.vector3d(sceneX, 21, sceneZ), Qt.vector3d(0, 0, 0));
+        function onBallReplacementRequested(sceneX, sceneZ, hasVelocity, sceneVx, sceneVz) {
+            placeBall(Qt.vector3d(sceneX, 21, sceneZ), hasVelocity ? Qt.vector3d(sceneVx, 0, sceneVz) : null);
         }
     }
 
@@ -611,23 +630,37 @@ Node {
         );
     }
 
+    // Places the ball's PHYSICS body at scenePosition (grounded, y=21) and, if velocity
+    // is non-null, sets its linear velocity too; otherwise it is left at rest (reset()
+    // already zeroes it). Clears every piece of ball state that could otherwise fight
+    // the placement on a later tick (a deferred kick landing, stale tracked spin/velocity,
+    // an in-progress mouse-drag teleop throw), and un-parks any robot's ball-holding
+    // marker so dribble state doesn't linger against the newly placed ball. Shared by the
+    // mouse "place ball" shortcut and network Replacement so both behave identically.
+    function placeBall(scenePosition, velocity) {
+        teleopVelocity = Qt.vector4d(0, 0, 0, 0);
+        ballVelocity = Qt.vector4d(0, 0, 0, 0);
+        ballSpin = Qt.vector3d(0, 0, 0);
+        pendingKickVelocity = null;
+        ball.reset(scenePosition, Qt.vector3d(0, 0, 0));
+        if (velocity !== null) {
+            ball.setLinearVelocity(velocity);
+        }
+        ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
+        ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
+        preBallPosition = ballPosition;
+        skipRollingFrictionFrames = 30;
+        for (let i = 0; i < blue.num; i++) {
+            bBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+        }
+        for (let i = 0; i < yellow.num; i++) {
+            yBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+        }
+    }
+
     function resetPosition(target, result) {
         if (target == "ball") {
-            teleopVelocity = Qt.vector4d(0, 0, 0, 0);
-            ballVelocity = Qt.vector4d(0, 0, 0, 0);
-            ballSpin = Qt.vector3d(0, 0, 0);
-            pendingKickVelocity = null;
-            ball.reset(result.scenePosition, Qt.vector3d(0, 0, 0));
-            ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
-            ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
-            preBallPosition = ballPosition;
-            skipRollingFrictionFrames = 30;
-            for (let i = 0; i < blue.num; i++) {
-                bBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
-            }
-            for (let i = 0; i < yellow.num; i++) {
-                yBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
-            }
+            placeBall(result.scenePosition, null);
         } else if (target == "bot") {
             if (selectedRobotColor == "blue") {
                 bBotsFrame.children[botCursorID].reset(result.scenePosition, Qt.vector3d(0, -90, 0));
