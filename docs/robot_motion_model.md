@@ -18,11 +18,11 @@ sim の台が指令どおり即座に動き、球が別の落ち方をしてい�
 |---|---|---|
 | むだ時間 | `DeadTimeSec` | `robot.input_dead_time_sec` |
 | 定常ゲイン | `GainVx` `GainVy` `GainVxFromUy` `GainVyFromUx` | `robot.gain_vx` `gain_vy` `gain_vx_from_uy` `gain_vy_from_ux` |
-| 角速度の上限 | `MaxAngularVelRadS` | `physics.yaml: max_angular_velocity` |
+| 角速度の上限 | `MaxAngularVelRadS` | `robot.max_angular_velocity` |
 | 車輪周速の予算 | `WheelRimSpeedBudgetMmS` | `robot.wheel_rim_speed_budget_mm_s` |
 | 一次遅れ | `TauVxSec` `TauVySec` `TauOmegaSec` | `robot.tau_vx` `tau_vy` `tau_omega` |
 | 軸別の牽引限界 | `TractionAccelXMmS2` `TractionAccelYMmS2` `TractionDecelXMmS2` `TractionDecelYMmS2` | `robot.traction_accel_x/y_mm_s2` `traction_decel_x/y_mm_s2` |
-| 角加速度の上限 | `MaxAngularAccelRadS2` | `physics.yaml: max_angular_acceleration` |
+| 角加速度の上限 | `MaxAngularAccelRadS2` | `robot.max_angular_acceleration` |
 
 読み方は 2 段。`[RobotModel]` が全 ID の既定値、`[RobotModel.<id>]` はその ID の**差分**で、
 書かれたキーだけが既定値を上書きする。`Enabled=false` でモデルを丸ごと切ると、
@@ -76,6 +76,10 @@ python3 tools/gen_robot_models.py --write-raven <ssl-RAVEN>/app/config
 ### 注意
 
 - **青黄ともに同じ ID には同じ台**を割り当てる。相手チームも実機相当になる。
+- **回転の上限 (`MaxAngularVelRadS` / `MaxAngularAccelRadS2`) は今のところ全機共通** (10 rad/s・
+  35 rad/s²、RAVEN の `physics.yaml` の計画上限と同値)。RAVEN の追従器は機体モデルにこのキーが
+  あれば計画の上限と小さい方を取る (`CommandKinematics.Limits.of`) ので、同値のあいだは無作用。
+  機体ごとに回転が弱いのを測ったらここを世代別にすると、RAVEN もそのぶん計画を落とす。
 - むだ時間 0.11〜0.14 s は RAVEN が**自分の閉ループごと**同定した値で、vision → 判断 →
   無線 → ドライバまでを含む。sim では経路の一部が存在しないが、RAVEN の MPC が補償して
   いるのはこの値なので、同じ値を再現するのが MPC から見て正しい台になる。

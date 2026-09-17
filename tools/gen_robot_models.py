@@ -43,6 +43,10 @@ BASE = {
               WheelRimSpeedBudgetMmS=2000.0),
 }
 
+# 回転の上限。今のところ機体差を測っていないので全機共通 (RAVEN の physics.yaml の計画上限と同値)。
+# 機体ごとに測ったらここを世代別にする。
+COMMON = dict(MaxAngularVelRadS=10.0, MaxAngularAccelRadS2=35.0)
+
 # ばらつきの幅 (±)。実機 3 台の世代差より十分小さく、個体差として妥当な範囲に収める。
 SPREAD = {
     'TauVxSec': 0.10, 'TauVySec': 0.10, 'TauOmegaSec': 0.10,
@@ -59,7 +63,8 @@ EXACT = {2: 'A', 4: 'B', 11: 'C'}
 
 ORDER = ['TauVxSec', 'TauVySec', 'TauOmegaSec', 'DeadTimeSec',
          'TractionAccelXMmS2', 'TractionAccelYMmS2', 'TractionDecelXMmS2', 'TractionDecelYMmS2',
-         'GainVx', 'GainVy', 'GainVyFromUx', 'GainVxFromUy', 'WheelRimSpeedBudgetMmS']
+         'GainVx', 'GainVy', 'GainVyFromUx', 'GainVxFromUy', 'WheelRimSpeedBudgetMmS',
+         'MaxAngularVelRadS', 'MaxAngularAccelRadS2']
 
 # sim の ini のキー -> RAVEN の system_model robot 節のキー。
 RAVEN_KEY = {
@@ -70,6 +75,8 @@ RAVEN_KEY = {
     'GainVx': 'gain_vx', 'GainVy': 'gain_vy',
     'GainVyFromUx': 'gain_vy_from_ux', 'GainVxFromUy': 'gain_vx_from_uy',
     'WheelRimSpeedBudgetMmS': 'wheel_rim_speed_budget_mm_s',
+    'MaxAngularVelRadS': 'max_angular_velocity',
+    'MaxAngularAccelRadS2': 'max_angular_acceleration',
 }
 
 
@@ -82,8 +89,11 @@ def jitter(robot_id, key):
 def model_for(robot_id):
     base = BASE[GEN[robot_id]]
     if robot_id in EXACT:
-        return base, {k: base[k] for k in ORDER}
-    return base, {k: base[k] * (1.0 + SPREAD[k] * jitter(robot_id, k)) for k in ORDER}
+        vals = {k: base[k] for k in ORDER if k in base}
+    else:
+        vals = {k: base[k] * (1.0 + SPREAD[k] * jitter(robot_id, k)) for k in ORDER if k in base}
+    vals.update(COMMON)   # 回転の上限は未計測なので世代もばらつきも付けない
+    return base, vals
 
 
 def fmt(v):
