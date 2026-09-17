@@ -26,8 +26,8 @@ Item {
     property bool tempCCDMode: observer.ccdMode
     property real tempGravity: observer.gravity
     property real tempBallRestitution: observer.ballRestitution
-    property real tempBallDynamicFriction: observer.ballDynamicFriction
-    property real tempRollingFriction: observer.rollingFriction
+    property real tempBallSlideDecel: observer.ballSlideDecelMmS2
+    property real tempBallRollDecel: observer.ballRollDecelMmS2
     property real tempKickerFriction: observer.kickerFriction
     property real tempFieldWidth: 0
     property real tempFieldHeight: 0
@@ -171,8 +171,8 @@ Item {
                     observer.ccdMode = tempCCDMode;
                     observer.gravity = tempGravity;
                     observer.ballRestitution = tempBallRestitution;
-                    observer.ballDynamicFriction = tempBallDynamicFriction;
-                    observer.rollingFriction = tempRollingFriction;
+                    observer.ballSlideDecelMmS2 = tempBallSlideDecel;
+                    observer.ballRollDecelMmS2 = tempBallRollDecel;
                     observer.kickerFriction = tempKickerFriction;
                     observer.numThreads = tempNumThreads;
                     observer.hideBallMode = tempHideBallMode;

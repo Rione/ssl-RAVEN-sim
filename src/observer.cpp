@@ -1,5 +1,7 @@
 #include "observer.h"
 
+#include <cmath>
+
 Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_v2.ini", QSettings::IniFormat) {
     visionMulticastAddress = config.value("Network/visionMulticastAddress", "127.0.0.1").toString();
     visionMulticastPort = config.value("Network/visionMulticastPort", 10020).toInt();
@@ -13,9 +15,7 @@ Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_
     lightStadiumMode = config.value("LightMode/Stadium", true).toBool();
     lightFieldMode = config.value("LightMode/Field", true).toBool();
     ballStaticFriction = config.value("Physics/BallStaticFriction", 0.5).toFloat();
-    ballDynamicFriction = config.value("Physics/BallDynamicFriction", 0.3).toFloat();
     ballRestitution = config.value("Physics/BallRestitution", 0.5).toFloat();
-    rollingFriction = config.value("Physics/RollingFriction", 0.04).toFloat();
     kickerFriction = config.value("Physics/KickerFriction", 0.8).toFloat();
     gravity = config.value("Physics/Gravity", 9.81).toFloat();
     desiredFps = 60;
@@ -69,19 +69,65 @@ Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_
     feedbackSender = new FeedbackSender(feedbackAddress.toStdString(),
                                         static_cast<unsigned short>(feedbackPort));
 
-    actTauLinearSec = config.value("Actuation/TauLinearSec", 0.0).toFloat();
-    actTauAngularSec = config.value("Actuation/TauAngularSec", 0.0).toFloat();
-    actDeadTimeLinearSec = config.value("Actuation/DeadTimeLinearSec", 0.0).toFloat();
-    actDeadTimeAngularSec = config.value("Actuation/DeadTimeAngularSec", 0.0).toFloat();
-    for (int i = 0; i < MaxRobots; ++i) {
-        blueRobots[i]->setActuationParams(actTauLinearSec, actTauAngularSec,
-                                          actDeadTimeLinearSec, actDeadTimeAngularSec);
-        yellowRobots[i]->setActuationParams(actTauLinearSec, actTauAngularSec,
-                                            actDeadTimeLinearSec, actDeadTimeAngularSec);
-    }
+    loadRobotModels();
+
+    // --- Ball model (RAVEN の BallSpeedModel と同じ 2 段一定減速) ---
+    // RAVEN 側は system_model の ball_model で持っていて、パスの初速逆算も到達時刻の
+    // 予測もすべてこの 3 つから引いている (common/physics/BallPhysics)。sim が別の
+    // パラメータ化 (摩擦係数) で転がしていると、RAVEN の「ここで受け取れる」が
+    // 外れ続ける。既定値は 0917 の実測同定値。
+    ballSlideDecelMmS2 = std::fabs(config.value("BallModel/AccSlideMmS2", 2159.324207613644).toFloat());
+    ballRollDecelMmS2 = std::fabs(config.value("BallModel/AccRollMmS2", 213.609470182153).toFloat());
+    ballSwitchRatio = config.value("BallModel/KSwitch", 2.0 / 3.0).toFloat();
+    ballNormalRestitution = config.value("BallModel/DirectKickNormalRestitution", 0.8).toFloat();
+    ballTangentRetention = config.value("BallModel/DirectKickTangentRetention", 1.0).toFloat();
     // NOTE: no wall-clock simulation timer. Vision/actuation/feedback are driven
     // from updateObjects() once per physics frame (simulation time) — see the
     // comment there.
+}
+
+// config_v2.ini から各 ID のプラントモデルを組み立てて青黄の台に載せる。
+//
+//   [RobotModel]       … 全 ID の既定値 (Enabled=false でモデルを丸ごと切れる)
+//   [RobotModel.<id>]  … その ID の差分。書かれたキーだけが既定値を上書きする。
+//
+// 値の出どころは RAVEN の app/config/system_model_real_<mac>_ID<n>.yaml。ID 2/4/11 は
+// 実機の同定値そのまま、それ以外は 3 台の世代のどれかを母体にしたクローン。
+// 詳細は docs/robot_motion_model.md。
+void Observer::loadRobotModels() {
+    robotModelEnabled = config.value("RobotModel/Enabled", true).toBool();
+
+    RobotMotionModel base;
+    // 車輪配置は [Encoder] と同じものを使う。エンコーダの合成と車輪周速の予算が
+    // 別々の幾何を見ていると、RAVEN から見て辻褄が合わなくなる。
+    base.robotRadiusMm = static_cast<float>(robotRadiusMm);
+    for (int k = 0; k < 4; ++k) {
+        base.wheelAngleRad[k] = static_cast<float>(wheelAngleRad[k]);
+    }
+
+    if (!robotModelEnabled) {
+        // 素通し: ゲイン 1、遅れなし、上限なし (0 は「上限なし」)。QML 側も
+        // robotModelEnabled が false なら従来の MotionControl 経由に戻る。
+        base.tauVxSec = base.tauVySec = base.tauOmegaSec = 0.0f;
+        base.deadTimeSec = 0.0f;
+        base.tractionAccelXMmS2 = base.tractionAccelYMmS2 = 0.0f;
+        base.tractionDecelXMmS2 = base.tractionDecelYMmS2 = 0.0f;
+        base.maxAngularVelRadS = base.maxAngularAccelRadS2 = 0.0f;
+        base.wheelRimSpeedBudgetMmS = 0.0f;
+        for (int i = 0; i < MaxRobots; ++i) {
+            blueRobots[i]->setMotionModel(base);
+            yellowRobots[i]->setMotionModel(base);
+        }
+        return;
+    }
+
+    base = RobotMotionModel::fromSettings(config, "RobotModel", base);
+    for (int i = 0; i < MaxRobots; ++i) {
+        const RobotMotionModel m =
+            RobotMotionModel::fromSettings(config, QString("RobotModel.%1").arg(i), base);
+        blueRobots[i]->setMotionModel(m);
+        yellowRobots[i]->setMotionModel(m);
+    }
 }
 
 void Observer::visionReceive(const mocSim_Packet& packet) {
@@ -238,14 +284,14 @@ void Observer::setBallRestitution(float restitution) {
     config.setValue("Physics/BallRestitution", qRound(restitution*100)/100.0);
     emit settingChanged();
 }
-void Observer::setBallDynamicFriction(float friction) {
-    ballDynamicFriction = friction;
-    config.setValue("Physics/BallDynamicFriction", qRound(friction*100)/100.0);
+void Observer::setBallSlideDecelMmS2(float decel) {
+    ballSlideDecelMmS2 = std::fabs(decel);
+    config.setValue("BallModel/AccSlideMmS2", -ballSlideDecelMmS2);
     emit settingChanged();
 }
-void Observer::setRollingFriction(float friction) {
-    rollingFriction = friction;
-    config.setValue("Physics/RollingFriction", qRound(friction*100)/100.0);
+void Observer::setBallRollDecelMmS2(float decel) {
+    ballRollDecelMmS2 = std::fabs(decel);
+    config.setValue("BallModel/AccRollMmS2", -ballRollDecelMmS2);
     emit settingChanged();
 }
 void Observer::setKickerFriction(float friction) {
@@ -311,6 +357,10 @@ void Observer::updateObjects(
         blueRobots[i]->advanceActuation(simDtSec);
         yellowRobots[i]->advanceActuation(simDtSec);
     }
+    // 適用速度が動いたことを QML に伝える。これが無いと QML 側のキャッシュは
+    // 指令パケットが届いた瞬間しか更新されず、むだ時間と一次遅れの立ち上がりが
+    // パケットの到着間隔ぶん飛び飛びになる。
+    emit actuationAdvanced();
 
     // Synthesize RACOON-Pi feedback (wheel encoders + onboard camera + sensors)
     // for the team RAVEN controls. Differentiation dt = simulation step (the pose

@@ -70,6 +70,11 @@ Node {
     property var ballSpin: Qt.vector3d(0, 0, 0)
     // Tracked velocity of the previous frame (m/s, scene axes), for impact detection in applyBallFriction().
     property var prevBallVelocity: Qt.vector3d(0, 0, 0)
+    // 直近の「蹴り出しの速さ」v0 [mm/s] と、もう転がりに入ったか。RAVEN のボールモデルは
+    // 滑走 → 転がりの切り替えを v0 の割合 (k_switch) で決めるので、v0 を覚えておく必要がある。
+    // キック・配置・衝突・外から押されたとき、のいずれでも数え直す。
+    property real ballLaunchSpeed: 0.0
+    property bool ballRolling: true
     property var ballPositions: new Array(ballModelNum).fill(Qt.vector4d(0, 0, 0, 0))
     MotionControl {
         id: motionControl
@@ -87,6 +92,20 @@ Node {
                 blue.velAngulars[i] = observer.blue_robots[i].velangular;
                 blue.kickspeeds[i] = Qt.vector3d(observer.blue_robots[i].kickspeedx, observer.blue_robots[i].kickspeedz, observer.blue_robots[i].kickspeedx);
                 blue.spinners[i] = observer.blue_robots[i].spinner;
+            }
+        }
+        // Robot::advanceActuation が 1 tick 進むたび。むだ時間と一次遅れの立ち上がりを
+        // 取りこぼさないよう、速度だけを毎フレーム読み直す (kick/dribble には触らない)。
+        function onActuationAdvanced() {
+            for (var i = 0; i < blue.num; i++) {
+                blue.velNormals[i] = observer.blue_robots[i].velnormal;
+                blue.velTangents[i] = observer.blue_robots[i].veltangent;
+                blue.velAngulars[i] = observer.blue_robots[i].velangular;
+            }
+            for (var j = 0; j < yellow.num; j++) {
+                yellow.velNormals[j] = observer.yellow_robots[j].velnormal;
+                yellow.velTangents[j] = observer.yellow_robots[j].veltangent;
+                yellow.velAngulars[j] = observer.yellow_robots[j].velangular;
             }
         }
         function onYellowRobotsChanged() {
@@ -140,6 +159,7 @@ Node {
             inertiaTensor: Qt.vector3d(5000, 5000, 5000)
             linearAxisLock: DynamicRigidBody.LockY
             sendContactReports: true
+            physicsMaterial: botMaterial
             position: Qt.vector4d(blue.poses[index].x, 0, blue.poses[index].z, blue.poses[index].w)
             collisionShapes: [
                 ConvexMeshShape {
@@ -268,6 +288,7 @@ Node {
             inertiaTensor: Qt.vector3d(5000, 5000, 5000)
             linearAxisLock: DynamicRigidBody.LockY
             sendContactReports: true
+            physicsMaterial: botMaterial
             position: Qt.vector4d(yellow.poses[index].x, 0, yellow.poses[index].z, yellow.poses[index].w)
             collisionShapes: [
                 ConvexMeshShape {
@@ -390,7 +411,26 @@ Node {
 
     PhysicsMaterial {
         id: ballMaterial
+        // 接地の摩擦は 0。地面との接線力は applyBallFriction() が丸ごと持っているので、
+        // PhysX 側にも摩擦があると滑走相が二重に減速する (PhysX は 2 つの材質を平均するため、
+        // 既定の 0.5 のままだと地面接触に μ = 0.25 が上乗せされていた)。
+        staticFriction: 0.0
+        dynamicFriction: 0.0
+        // 壁・ゴール枠との跳ね返り。ロボットとの跳ね返りは botMaterial 側で決める。
         restitution: observer.ballRestitution
+    }
+
+    // ロボットの外装。RAVEN の ball_model.direct_kick を再現するための材質。
+    //   tangent_retention = 1.0 … 接線方向は落ちない → 摩擦 0
+    //   normal_restitution    … 法線方向の反発。PhysX は 2 つの材質の平均を取るので、
+    //                           ball 側 (observer.ballRestitution、壁向けに詰めた値) との
+    //                           平均がちょうど normal_restitution になる値をこちらに入れる。
+    PhysicsMaterial {
+        id: botMaterial
+        staticFriction: 0.0
+        dynamicFriction: 0.0
+        restitution: Math.max(0.0, Math.min(1.0,
+                        2.0 * observer.ballNormalRestitution - observer.ballRestitution))
     }
 
     DynamicRigidBody {
@@ -500,7 +540,14 @@ Node {
             color.poses[i] = Qt.vector4d(frame.position.x, frame.position.y, frame.position.z, mu.normalizeRadian((frame.eulerRotation.y+90) * Math.PI / 180.0));
 
             color.velocities[i] = mu.calcVelocity(color.poses[i], color.prePoses[i], timestep);
-            let newVelocity = motionControl.calcSpeed(Qt.vector3d(color.velTangents[i], color.velNormals[i], color.velAngulars[i]), color.velocities[i], color.preVelocities[i], timestep, color.poses[i].w);
+            // velTangents/velNormals/velAngulars は Robot::advanceActuation が実機の同定モデル
+            // (むだ時間・一次遅れ・定常ゲイン・軸別の牽引限界・車輪周速の予算) を通したあとの
+            // 「実際に出る速度」。MotionControl の等方な加減速制限を上から重ねると、軸ごとに
+            // 2 倍以上違う牽引限界も 1 未満の定常ゲインも潰れて実機と別物になるので通さない。
+            // [RobotModel] Enabled=false のときだけ従来の経路に戻る。
+            let newVelocity = observer.robotModelEnabled
+                ? Qt.vector3d(color.velTangents[i], color.velNormals[i], color.velAngulars[i])
+                : motionControl.calcSpeed(Qt.vector3d(color.velTangents[i], color.velNormals[i], color.velAngulars[i]), color.velocities[i], color.preVelocities[i], timestep, color.poses[i].w);
 
             color.prePoses[i] = color.poses[i];
             color.preVelocities[i] = Qt.vector4d(newVelocity.x, newVelocity.y, newVelocity.z, newVelocity.w);
@@ -611,7 +658,11 @@ Node {
                 && Math.abs(ball.position.x) < 50000
                 && Math.abs(ball.position.z) < 50000) {
             ball.setLinearVelocity(pendingKickVelocity);
-            // The ball leaves the kicker with no spin; the slip-friction phase spins it up.
+            // ここが RAVEN のモデルで言う蹴り出し: v0 を取り直して滑走からやり直す。
+            ballLaunchSpeed = Math.sqrt(pendingKickVelocity.x * pendingKickVelocity.x
+                                        + pendingKickVelocity.z * pendingKickVelocity.z);
+            ballRolling = false;
+            // The ball leaves the kicker with no spin; the slide phase spins it up.
             ballSpin = Qt.vector3d(0, 0, 0);
             ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
             pendingKickVelocity = null;
@@ -642,32 +693,32 @@ Node {
         }
     }
 
-    // Slip/roll ball-friction model.
+    // RAVEN のボールモデル (common/physics/BallSpeedModel + system_model の ball_model) を
+    // そのまま持ち込んだ、滑走 → 転がりの 2 段「一定減速」モデル。
     //
-    // A ball launched without spin first SLIDES: kinetic (dynamic) friction acts at the
-    // contact point opposite the slip velocity, decelerating the ball AND applying a
-    // torque that spins it up. The slip shrinks until the contact point stops moving
-    // (rolling without slipping), after which only the much smaller ROLLING RESISTANCE
-    // decelerates it. The ball therefore transitions slip -> roll while slowing down.
+    //   滑走 (slide): 蹴り出しの速さ v0 から k_switch·v0 まで、一定の acc_slide で落ちる
+    //   転がり (roll): そこから先は一定の acc_roll で落ちる
     //
-    // Contact point (ball bottom, offset (0,-R,0) from the centre) velocity:
-    //   u = v + omega x (0,-R,0) = (vx + R*wz, vz - R*wx)
-    // Rolling-without-slipping means u = 0, i.e. wz = -vx/R, wx = vz/R.
-    // For a solid sphere (I = 2/5 m R^2) the slip magnitude decays at rate (7/2)*muK*g,
-    // giving the classic result that a no-spin launch reaches rolling at 5/7 of its
-    // launch speed.
+    // RAVEN はパスの初速逆算 (BallSpeedModel.initialSpeedFor)、到達時刻 (BallPhysics.arrivalTime)、
+    // 到達速度 (speedAfterTravel) をすべてこの 3 つの数から引いている。sim が「摩擦係数 × g」で
+    // 別の落ち方をしていると、RAVEN の「ここで受け取れる」が毎回外れる。だから係数ではなく
+    // mm/s^2 の減速度そのものを合わせる。値は [BallModel] (observer 経由)。
     //
-    // Parameters live in [Physics] of the config:
-    //   BallDynamicFriction (muK)  - kinetic/dynamic friction coefficient (slip phase)
-    //   RollingFriction     (cRoll) - rolling resistance coefficient (roll phase)
+    // 切り替えの基準が蹴り出しの速さ v0 なのがこのモデルの肝で、物理的な転がり条件
+    // (剛球なら 5/7·v0) とは別物。RAVEN が 2/3 で同定しているので sim もそれに従う。
+    // v0 は ballLaunchSpeed で持ち、キック・配置・衝突のたびに数え直す。
+    //
+    // 球の回転は PhysX から読み出せないので ballSpin が唯一の真値。滑走のあいだに
+    // 転がりの回転まで線形に持ち上げて、見た目も滑走 → 転がりになるようにしている。
     function applyBallFriction(ballBody, linearVelocity, timestep)
     {
-        let muK = observer.ballDynamicFriction;   // 動摩擦係数
-        let cRoll = observer.rollingFriction;     // 転がり抵抗係数
+        let aSlide = observer.ballSlideDecelMmS2;   // 滑走の減速度 [mm/s^2]
+        let aRoll = observer.ballRollDecelMmS2;     // 転がりの減速度 [mm/s^2]
+        let kSwitch = observer.ballSwitchRatio;     // v_switch = kSwitch * v0
 
         // Skip when both effects are off, on a bad dt, or while the ball is parked
         // off-field during dribbling (x ~ 100000): never disturb the park sentinel.
-        if ((muK <= 0 && cRoll <= 0) || timestep <= 0 || ballBody.position.x > 50000) {
+        if ((aSlide <= 0 && aRoll <= 0) || timestep <= 0 || ballBody.position.x > 50000) {
             return;
         }
         // A chip in the air gets no ground friction until it lands.
@@ -677,94 +728,91 @@ Node {
 
         let dt = timestep > 1.0 ? timestep / 1000.0 : timestep;   // ms -> s (fixed 1/60 s)
         let R = ballRadius;
-        let g = observer.gravity * 1000.0;   // m/s^2 -> mm/s^2, matching PhysicsWorld.gravity
 
         // calcVelocity() reports mm-per-(frame ms), which is numerically m/s; convert to
-        // the scene's mm/s so it is consistent with R (mm) and g (mm/s^2).
+        // the scene's mm/s so it is consistent with R (mm) and the decelerations (mm/s^2).
         let vx = linearVelocity.x * 1000.0;
         let vz = linearVelocity.z * 1000.0;
-        let wx = ballSpin.x;
-        let wz = ballSpin.z;
         let vx0 = vx;
         let vz0 = vz;
-
-        let speed = Math.sqrt(vx * vx + vz * vz);
+        let speed0 = Math.sqrt(vx * vx + vz * vz);
 
         // Impact (wall, goal, robot): the velocity direction flipped or the speed jumped between two
-        // frames. The tracked spin still belongs to the motion BEFORE the impact, and the finite-
-        // difference velocity spans the impact, so applying slip friction here would drag the ball
-        // along its old spin and bend the rebound. Re-sync the spin to rolling with the new velocity
-        // and let this frame pass without a friction impulse.
+        // frames. The finite-difference velocity spans the impact, so decelerating here would bend the
+        // rebound. Skip this frame's impulse and treat the rebound as a fresh launch — which is also
+        // what RAVEN's model says happens after a robot contact (direct_kick).
         let pvx = prevBallVelocity.x * 1000.0;
         let pvz = prevBallVelocity.z * 1000.0;
         let prevSpeed = Math.sqrt(pvx * pvx + pvz * pvz);
-        let impact = prevSpeed > 200.0 && speed > 200.0
-                && (vx * pvx + vz * pvz < 0.0 || speed > 1.5 * prevSpeed);
+        let impact = prevSpeed > 200.0 && speed0 > 200.0
+                && (vx * pvx + vz * pvz < 0.0 || speed0 > 1.5 * prevSpeed);
         prevBallVelocity = linearVelocity;
         if (impact) {
-            ballSpin = Qt.vector3d(vz / R, ballSpin.y, -vx / R);
+            ballLaunchSpeed = speed0;
+            ballRolling = false;
+            ballSpin = Qt.vector3d(0, ballSpin.y, 0);
             ballBody.setAngularVelocity(ballSpin);
             return;
         }
-        // Fully stop a crawling ball (there is no PhysX floor friction; friction is
+        // Fully stop a crawling ball (there is no PhysX floor friction; the deceleration is
         // modelled entirely here, so nothing else would ever bring it to rest).
-        if (speed < 20.0) {
-            if (speed > 0.0) {
+        if (speed0 < 20.0) {
+            if (speed0 > 0.0) {
                 ballBody.applyCentralImpulse(Qt.vector3d(-ballMass * vx, 0, -ballMass * vz));
             }
+            ballLaunchSpeed = 0.0;
+            ballRolling = true;
             ballSpin = Qt.vector3d(0, 0, 0);
             ballBody.setAngularVelocity(Qt.vector3d(0, 0, 0));
             return;
         }
 
-        // Slip velocity at the contact point.
-        let ux = vx + R * wz;
-        let uz = vz - R * wx;
-        let slip = Math.sqrt(ux * ux + uz * uz);
-
-        let remaining = dt;
-        const slipEps = 1.0;   // mm/s: below this the contact point is effectively rolling
-
-        if (slip > slipEps && muK > 0) {
-            // --- Slip phase (sub-stepped so we switch to rolling exactly when u -> 0). ---
-            let aK = muK * g;                 // linear deceleration magnitude
-            let slipDecayRate = 3.5 * aK;     // d|u|/dt for a solid sphere
-            let tRoll = slip / slipDecayRate; // time until rolling without slipping
-            let tSlip = Math.min(tRoll, remaining);
-
-            let nux = ux / slip;
-            let nuz = uz / slip;
-            // Linear: kinetic friction opposes the slip direction.
-            vx -= aK * tSlip * nux;
-            vz -= aK * tSlip * nuz;
-            // Angular: the same contact force spins the ball up.
-            //   dwx/dt = (5 aK)/(2R) * nuz,  dwz/dt = -(5 aK)/(2R) * nux
-            let angK = (2.5 * aK) / R;
-            wx += angK * tSlip * nuz;
-            wz -= angK * tSlip * nux;
-
-            remaining -= tSlip;
+        // 速くなったなら外から力が入った (押された・蹴られた)。衝突として拾えなかった
+        // ぶんもここで新しい蹴り出しとして数え直す。+5 は差分速度の揺れの逃げ。
+        if (speed0 > ballLaunchSpeed + 5.0) {
+            ballLaunchSpeed = speed0;
+            ballRolling = false;
         }
 
-        if (remaining > 0) {
-            // --- Roll phase: enforce the rolling constraint, then rolling resistance. ---
-            wz = -vx / R;
-            wx = vz / R;
+        let speed = speed0;
+        let remaining = dt;
+        const vSwitch = kSwitch * ballLaunchSpeed;
 
-            let vmag = Math.sqrt(vx * vx + vz * vz);
-            if (vmag > 0.0 && cRoll > 0) {
-                let dv = Math.min(cRoll * g * remaining, vmag);
-                vx -= dv * vx / vmag;
-                vz -= dv * vz / vmag;
-                wz = -vx / R;   // keep spin consistent with the reduced linear speed
-                wx = vz / R;
+        if (!ballRolling && aSlide > 0) {
+            // --- 滑走相。switch をまたぐフレームは、またぐところで刻んで残りを転がりに回す。 ---
+            if (speed > vSwitch) {
+                let tSlide = Math.min(remaining, (speed - vSwitch) / aSlide);
+                speed -= aSlide * tSlide;
+                remaining -= tSlide;
             }
+            if (speed <= vSwitch) {
+                ballRolling = true;
+            }
+        }
+        if (remaining > 0 && aRoll > 0) {
+            // --- 転がり相 ---
+            speed = Math.max(0.0, speed - aRoll * remaining);
+        }
+
+        // 向きは変えずに大きさだけ落とす。
+        const scale = speed / speed0;
+        vx *= scale;
+        vz *= scale;
+
+        // 見た目の回転。転がりに入ったら転がり条件 (接地点が止まる) そのもの、滑走の
+        // あいだは v0 から v_switch へ進んだ割合ぶんだけ、そこへ線形に持ち上げる。
+        let rollWx = vz / R;
+        let rollWz = -vx / R;
+        let spinRatio = 1.0;
+        if (!ballRolling && ballLaunchSpeed > vSwitch) {
+            spinRatio = (ballLaunchSpeed - speed) / (ballLaunchSpeed - vSwitch);
+            spinRatio = Math.max(0.0, Math.min(1.0, spinRatio));
         }
 
         // Apply the linear change as an impulse (J = m*dv) so PhysX still owns collision
         // response; drive the visible spin directly from our tracked angular velocity.
         ballBody.applyCentralImpulse(Qt.vector3d(ballMass * (vx - vx0), 0, ballMass * (vz - vz0)));
-        ballSpin = Qt.vector3d(wx, ballSpin.y, wz);
+        ballSpin = Qt.vector3d(rollWx * spinRatio, ballSpin.y, rollWz * spinRatio);
         ballBody.setAngularVelocity(ballSpin);
     }
 
@@ -802,6 +850,12 @@ Node {
         ball.reset(scenePosition, Qt.vector3d(0, 0, 0));
         if (velocity !== null) {
             ball.setLinearVelocity(velocity);
+            // 速度つきの配置は蹴り出しと同じ扱い: v0 を取り直して滑走からやり直す。
+            ballLaunchSpeed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+            ballRolling = false;
+        } else {
+            ballLaunchSpeed = 0.0;
+            ballRolling = true;
         }
         ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
         ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
