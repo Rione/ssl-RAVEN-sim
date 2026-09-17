@@ -46,6 +46,11 @@ public:
     // すべて 0・ゲイン 1・tau = むだ時間 = 0 のモデルを渡せば完全な素通しになる。
     void setMotionModel(const RobotMotionModel &model);
     const RobotMotionModel &motionModel() const { return model; }
+    // 同定モデルを通す前の生指令 [mm/s, rad/s]。診断 ([Diag] RobotCsvPath) が
+    // 「RAVEN が何を出したか」と「台が実際に何を出したか」を並べるために読む。
+    float getCmdTangent() const { return cmdTangent; }
+    float getCmdNormal() const { return cmdNormal; }
+    float getCmdAngular() const { return cmdAngular; }
     // Advance applied velocity one tick; getVel* then return the applied value.
     void advanceActuation(float dtSec);
 

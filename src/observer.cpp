@@ -71,6 +71,21 @@ Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_
 
     loadRobotModels();
 
+    // --- 追従診断 ---
+    QString diagPath = config.value("Diag/RobotCsvPath", "").toString();
+    diagRobotId = config.value("Diag/RobotId", -1).toInt();
+    if (!diagPath.isEmpty()) {
+        diagCsv.open(diagPath.toStdString(), std::ios::out | std::ios::trunc);
+        diagEnabled = diagCsv.is_open();
+        if (diagEnabled) {
+            // cmd_* = RAVEN が出した生指令、app_* = 同定モデルを通した値 (台に与える速度)、
+            // meas_* = vision に出る実際の機体速度 (姿勢差分を機体座標へ)。
+            diagCsv << "t,id,cmd_vx,cmd_vy,cmd_w,app_vx,app_vy,app_w,meas_vx,meas_vy,meas_w\n";
+        } else {
+            qWarning("[Diag] %s を開けなかった", qPrintable(diagPath));
+        }
+    }
+
     // --- Ball model (RAVEN の BallSpeedModel と同じ 2 段一定減速) ---
     // RAVEN 側は system_model の ball_model で持っていて、パスの初速逆算も到達時刻の
     // 予測もすべてこの 3 つから引いている (common/physics/BallPhysics)。sim が別の
@@ -365,6 +380,8 @@ void Observer::updateObjects(
     // Synthesize RACOON-Pi feedback (wheel encoders + onboard camera + sensors)
     // for the team RAVEN controls. Differentiation dt = simulation step (the pose
     // delta it differentiates is exactly one physics frame apart).
+    writeRobotDiag(encoderTeamYellow ? yellowPositions : bluePositions, simDtSec);
+
     emitEncoderFeedback(encoderTeamYellow ? yellowPositions : bluePositions,
                         encoderTeamYellow ? yellowBallCameraExists : blueBallCameraExists,
                         encoderTeamYellow ? yellowBallPixels : blueBallPixels,
@@ -377,6 +394,40 @@ void Observer::updateObjects(
 
     emit updateSimulationSignal();
     sender->send(1, ballPosition, bluePositions, yellowPositions);
+}
+
+// RAVEN の指令・同定モデルの出力・実際の機体速度を 1 行に並べて書く。
+// 実速度は vision と同じ姿勢 (positions[i] = X[mm], Y[mm], heading[deg]) の差分を
+// 機体座標へ回したもの — RAVEN から見える速度そのもの。
+void Observer::writeRobotDiag(const QList<QVector3D> &positions, float dtSec) {
+    if (!diagEnabled || dtSec <= 0.0f) {
+        return;
+    }
+    const int n = positions.size();
+    if (prevEncoderPositions.size() != n) {
+        return;  // 差分が取れるのは 2 フレーム目から (prevEncoderPositions は下の合成が更新する)
+    }
+    auto *team = encoderTeamYellow ? yellowRobots.data() : blueRobots.data();
+    for (int i = 0; i < n; ++i) {
+        if (diagRobotId >= 0 && i != diagRobotId) {
+            continue;
+        }
+        const QVector3D &p = positions[i];
+        const QVector3D &pp = prevEncoderPositions[i];
+        const double wvx = (p.x() - pp.x()) / dtSec;
+        const double wvy = (p.y() - pp.y()) / dtSec;
+        const double dthDeg = std::fmod(p.z() - pp.z() + 540.0, 360.0) - 180.0;
+        const double measW = (dthDeg * M_PI / 180.0) / dtSec;
+        const double w = p.z() * M_PI / 180.0;
+        const double measVx = wvx * std::cos(w) + wvy * std::sin(w);
+        const double measVy = -wvx * std::sin(w) + wvy * std::cos(w);
+        const Robot *r = team[i];
+        diagCsv << diagTimeSec << ',' << i << ','
+                << r->getCmdTangent() << ',' << r->getCmdNormal() << ',' << r->getCmdAngular() << ','
+                << r->getVeltangent() << ',' << r->getVelnormal() << ',' << r->getVelangular() << ','
+                << measVx << ',' << measVy << ',' << measW << '\n';
+    }
+    diagTimeSec += dtSec;
 }
 
 void Observer::emitEncoderFeedback(const QList<QVector3D> &positions,

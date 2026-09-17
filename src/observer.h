@@ -9,6 +9,7 @@
 #include <QTimer>
 #include <QElapsedTimer>
 
+#include <fstream>
 #include <random>
 
 #include "networks/receiver.h"
@@ -253,6 +254,15 @@ private:
     // 各 ID の差分として読む。青黄ともに同じ ID には同じ台を割り当てる。
     bool robotModelEnabled = true;
     void loadRobotModels();
+
+    // --- 追従診断 ([Diag] RobotCsvPath) ---
+    // 1 物理フレーム 1 行で「RAVEN の指令 → 同定モデルの出力 → 実際の機体速度」を並べる。
+    // 3 つが揃っているかどうかが、RAVEN の速度指令に sim が追従できているかそのもの。
+    std::ofstream diagCsv;
+    bool diagEnabled = false;
+    int diagRobotId = -1;   // -1 = RAVEN が操作するチームの全機体
+    double diagTimeSec = 0.0;
+    void writeRobotDiag(const QList<QVector3D> &positions, float dtSec);
 
     float ballSlideDecelMmS2 = 0.0f;
     float ballRollDecelMmS2 = 0.0f;
