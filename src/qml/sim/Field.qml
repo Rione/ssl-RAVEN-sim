@@ -16,6 +16,15 @@ Node {
         scale: Qt.vector3d(10, 10, 10)
         visible: !observer.lightStadiumMode
     }
+    // Walls and goal frames: wooden boards. The ball material (restitution 0.41) is combined with this by
+    // PhysX (average), giving a rebound of about half the approach speed. Before, `physicsMaterial` here
+    // referred to an id that does not exist, so the engine default applied by accident.
+    PhysicsMaterial {
+        id: wallMaterial
+        staticFriction: 0.3
+        dynamicFriction: 0.3
+        restitution: 0.9
+    }
     PhysicsMaterial {
         id: fieldMaterial
         staticFriction: 0.0
@@ -102,7 +111,7 @@ Model {
         sendContactReports: true
         position: Qt.vector3d(0, 50, -5310)
         scale: Qt.vector3d(126.2, 3, 10)
-        physicsMaterial: physicsMaterial
+        physicsMaterial: wallMaterial
         collisionShapes: BoxShape {}
     }
 
@@ -122,7 +131,7 @@ Model {
         id: bottomWallSecret
         position: Qt.vector3d(0, 50, 5310)
         scale: Qt.vector3d(126.2, 3, 10)
-        physicsMaterial: physicsMaterial
+        physicsMaterial: wallMaterial
         collisionShapes: BoxShape {}
     }
     
@@ -146,7 +155,7 @@ Model {
         position: Qt.vector3d(-6810, 50, 0)
         scale: Qt.vector3d(96.2, 3, 10)
         eulerRotation: Qt.vector3d(0, 90, 0)
-        physicsMaterial: physicsMaterial
+        physicsMaterial: wallMaterial
         collisionShapes: BoxShape {}
     }
 
@@ -167,7 +176,7 @@ Model {
         position: Qt.vector3d(6810, 50, 0)
         scale: Qt.vector3d(96.2, 3, 10)
         eulerRotation: Qt.vector3d(0, -90, 0)
-        physicsMaterial: physicsMaterial
+        physicsMaterial: wallMaterial
         collisionShapes: BoxShape {}
     }
 
@@ -190,7 +199,7 @@ Model {
         position: Qt.vector3d(6480, 50, 0)
         scale: Qt.vector3d(18.4, 3, 6.2)
         eulerRotation: Qt.vector3d(0, -90, 0)
-        physicsMaterial: physicsMaterial
+        physicsMaterial: wallMaterial
         collisionShapes: BoxShape {}
         
         onBodyContact: (body, positions, impulses, normals) => {
@@ -209,7 +218,7 @@ Model {
         receiveContactReports: true
         position: Qt.vector3d(6090, 50, -910)
         scale: Qt.vector3d(1.8, 3, 0.2)
-        physicsMaterial: physicsMaterial
+        physicsMaterial: wallMaterial
         collisionShapes: BoxShape {}
         Model {
             id: rightGoalTopModel
@@ -236,7 +245,7 @@ Model {
         receiveContactReports: true
         position: Qt.vector3d(6090, 50, 910)
         scale: Qt.vector3d(1.8, 3, 0.2)
-        physicsMaterial: physicsMaterial
+        physicsMaterial: wallMaterial
         collisionShapes: BoxShape {}
         Model {
             id: rightGoalBottomModel
@@ -276,7 +285,7 @@ Model {
         position: Qt.vector3d(-6480, 50, 0)
         scale: Qt.vector3d(18.4, 3, 6.2)
         eulerRotation: Qt.vector3d(0, 90, 0)
-        physicsMaterial: physicsMaterial
+        physicsMaterial: wallMaterial
         collisionShapes: BoxShape {}
         onBodyContact: (body, positions, impulses, normals) => {
             if (body.objectName == "ball") {
@@ -294,7 +303,7 @@ Model {
         receiveContactReports: true
         position: Qt.vector3d(-6090, 50, -910)
         scale: Qt.vector3d(1.8, 3, 0.2)
-        physicsMaterial: physicsMaterial
+        physicsMaterial: wallMaterial
         collisionShapes: BoxShape {}
         Model {
             id: leftGoalTopModel
@@ -321,7 +330,7 @@ Model {
         receiveContactReports: true
         position: Qt.vector3d(-6090, 50, 910)
         scale: Qt.vector3d(1.8, 3, 0.2)
-        physicsMaterial: physicsMaterial
+        physicsMaterial: wallMaterial
         collisionShapes: BoxShape {}
         Model {
             id: leftGoalBottomModel

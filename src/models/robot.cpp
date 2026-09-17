@@ -117,6 +117,28 @@ float Robot::advanceAxis(float &applied, float cmd, std::deque<float> &buf,
     return applied;
 }
 
+void Robot::resetMotion() {
+    kickspeedx = 0.0f;
+    kickspeedz = 0.0f;
+    spinner = 0.0f;
+
+    cmdTangent = 0.0f;
+    cmdNormal = 0.0f;
+    cmdAngular = 0.0f;
+    appliedTangent = 0.0f;
+    appliedNormal = 0.0f;
+    appliedAngular = 0.0f;
+    veltangent = 0.0f;
+    velnormal = 0.0f;
+    velangular = 0.0f;
+
+    // Drop anything sitting in the transport-delay pipeline so a previously
+    // latched command can't re-emerge a few ticks later.
+    delayBufTangent.clear();
+    delayBufNormal.clear();
+    delayBufAngular.clear();
+}
+
 void Robot::advanceActuation(float dtSec) {
     veltangent = advanceAxis(appliedTangent, cmdTangent, delayBufTangent,
                              tauLinearSec, deadTimeLinearSec, dtSec);

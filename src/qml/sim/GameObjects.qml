@@ -33,7 +33,24 @@ Node {
     property real grabOffsetZ: 0
     property real grabLiftHeight: 80
 
-    property var kickFlag: false
+    // Per-robot kicker recharge, in physics frames (1 s at 60 Hz). A kick used to raise ONE global flag that
+    // blocked every robot's kick AND dribbling for 1 s: with an opponent that kicks often, the other team could
+    // hardly ever kick or hold the ball. The kicker capacitor is per robot, and the dribbler is independent of it.
+    property int kickRechargeFrames: 60
+    property var kickCooldown: ({})
+    // A dribbler cannot catch a ball that passes it faster than this (mm/s, relative to the robot). Without
+    // this limit a robot that kicks with its dribbler running re-catches the ball in the launch frame and the
+    // kick is swallowed (the ball is 95 mm in front of it and still inside the hold cone).
+    property real dribbleCatchMaxSpeedMmS: 1500
+    // Who may act on the ball this frame ({isYellow, id} or null). The ball can sit in several mouth cones at once
+    // (a face-to-face contest): a robot asking to kick wins (a kick is instantaneous), otherwise the nearest mouth.
+    // If the winner is not the current holder, the hold is released so the winner can dribble or kick the ball.
+    // Before, whoever registered the dribble first kept the ball for good and the other robot's kicks were
+    // silently refused although its sensor reported "holding".
+    property var ballContestWinner: null
+    // A challenger that only dribbles must be this much closer to the ball than the current holder to take it
+    // (mm). Without it two facing dribblers swap the ball every frame.
+    property real contestTakeoverMarginMm: 30
     property var pendingKickVelocity: null
     property var preBallPosition: Qt.vector4d(0, 0, 0, 0)
     property var ballAngularVelocity: Qt.vector4d(0, 0, 0, 0)
@@ -42,13 +59,17 @@ Node {
     property var ballModelNum: 1
     property var ballReset: false
     property int skipRollingFrictionFrames: 0
-    // Ball physical constants (scene units are mm). 42 mm diameter, ~46 g golf ball.
+    // Ball physical constants (scene length units are mm). 42 mm diameter golf ball.
+    // Mass is kilograms — same unit as robot DynamicRigidBody.mass (2.5 kg).
+    // Was wrongly 46.0 (=46 kg, ~1000× SSL ball) which made the ball heavier than robots.
     property real ballRadius: 21.0
-    property real ballMass: 46.0
+    property real ballMass: 0.046
     // Angular velocity of the ball we integrate ourselves (rad/s). PhysX does not expose
     // a readable angular velocity, and the field has no contact friction, so the slip/roll
     // friction model owns the ball's spin. See applyBallFriction().
     property var ballSpin: Qt.vector3d(0, 0, 0)
+    // Tracked velocity of the previous frame (m/s, scene axes), for impact detection in applyBallFriction().
+    property var prevBallVelocity: Qt.vector3d(0, 0, 0)
     property var ballPositions: new Array(ballModelNum).fill(Qt.vector4d(0, 0, 0, 0))
     MotionControl {
         id: motionControl
@@ -78,10 +99,34 @@ Node {
             }
         }
         function onRobotReplacementRequested(id, isYellow, sceneX, sceneZ, sceneRotYDeg) {
-            (isYellow ? yBotsFrame : bBotsFrame).children[id].reset(Qt.vector3d(sceneX, 0, sceneZ), Qt.vector3d(0, sceneRotYDeg, 0));
+            // reset() (not just assigning position/eulerRotation) is required to actually
+            // warp a DynamicRigidBody's physics pose: for a dynamic body, physics owns the
+            // transform, so plain property assignment wouldn't move the PhysX actor. This
+            // also zeroes the body's linear/angular velocity. The observer has already
+            // stopped any latched velocity command for this robot (Robot::resetMotion(),
+            // called before this signal), so it stays put instead of immediately driving
+            // off again on the next tick.
+            let color = isYellow ? yellow : blue;
+            let frame = (isYellow ? yBotsFrame : bBotsFrame).children[id];
+            // m2 は config の robotCount 分しか Repeater3D を生まない。mirror-kickoff が
+            // 退避用に id 11..15 を送ると children[id] が undefined → TypeError だった。
+            if (!frame || typeof frame.reset !== "function") {
+                return;
+            }
+            frame.reset(Qt.vector3d(sceneX, 0, sceneZ), Qt.vector3d(0, sceneRotYDeg, 0));
+            // botMovement() derives the robot's "current velocity" from the pose delta
+            // across one tick (poses[i] vs. prePoses[i]). Left untouched, prePoses[i]
+            // still holds the pre-teleport pose, so the position jump reads as a huge
+            // one-tick velocity and MotionControl's accel-limiter spends a few frames
+            // coasting it back down to the (now zero) commanded speed instead of the
+            // robot being still immediately. Seeding prePoses/preVelocities to the
+            // just-placed, at-rest pose avoids that phantom delta.
+            let headingRad = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
+            color.prePoses[id] = Qt.vector4d(frame.position.x, frame.position.y, frame.position.z, headingRad);
+            color.preVelocities[id] = Qt.vector4d(0, 0, 0, 0);
         }
-        function onBallReplacementRequested(sceneX, sceneZ) {
-            ball.reset(Qt.vector3d(sceneX, 21, sceneZ), Qt.vector3d(0, 0, 0));
+        function onBallReplacementRequested(sceneX, sceneZ, hasVelocity, sceneVx, sceneVz) {
+            placeBall(Qt.vector3d(sceneX, 21, sceneZ), hasVelocity ? Qt.vector3d(sceneVx, 0, sceneVz) : null);
         }
     }
 
@@ -387,6 +432,65 @@ Node {
         scale: Qt.vector3d(0.8, 0.01, 0.8)
     }
 
+    // Scene position of the ball: the physics body, or the holder's mouth while it is held (the body is parked).
+    function heldBallScenePosition() {
+        if (dribbleInfo.id == -1) {
+            return Qt.vector3d(ballPosition.x, ballPosition.y, ballPosition.z);
+        }
+        let frame = (dribbleInfo.isYellow ? yBotsFrame : bBotsFrame).children[dribbleInfo.id];
+        let w = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
+        return Qt.vector3d(frame.position.x + 95 * Math.cos(-w), 25, frame.position.z + 95 * Math.sin(-w));
+    }
+
+    function resolveBallContest() {
+        let bp = heldBallScenePosition();
+        let best = null;
+        let bestKick = false;
+        let bestDist = 1e9;
+        for (let team = 0; team < 2; team++) {
+            let isYellow = team == 1;
+            let color = isYellow ? yellow : blue;
+            let frames = isYellow ? yBotsFrame : bBotsFrame;
+            for (let i = 0; i < color.num; i++) {
+                let frame = frames.children[i];
+                if (!frame) {
+                    continue;
+                }
+                let w = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
+                let d = Math.hypot(frame.position.x - bp.x, frame.position.z - bp.z);
+                let rad = mu.normalizeRadian(Math.atan2(frame.position.z - bp.z, frame.position.x - bp.x) - Math.PI + w);
+                let inCone = d < 110 * Math.cos(Math.abs(rad)) && Math.abs(rad) < Math.PI / 15.0 && bp.y < 40;
+                if (!inCone) {
+                    continue;
+                }
+                let key = (isYellow ? "y" : "b") + i;
+                let recharged = !(key in kickCooldown) || kickCooldown[key] <= 0;
+                let wantsKick = recharged && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0);
+                if (!wantsKick && !(color.spinners[i] > 0 && recharged)) {
+                    continue;   // a robot that has just kicked neither kicks nor catches until it recharges
+                }
+                let isHolder = dribbleInfo.id == i && dribbleInfo.isYellow == isYellow;
+                let effective = isHolder ? d - contestTakeoverMarginMm : d;   // the holder keeps a small edge
+                if (best === null || (wantsKick && !bestKick) || (wantsKick == bestKick && effective < bestDist)) {
+                    best = { isYellow: isYellow, id: i };
+                    bestKick = wantsKick;
+                    bestDist = effective;
+                }
+            }
+        }
+        ballContestWinner = best;
+        if (dribbleInfo.id != -1 && best !== null && (best.id != dribbleInfo.id || best.isYellow != dribbleInfo.isYellow)) {
+            // The holder loses the ball: the body goes back to the mouth as a free ball for this frame's botMovement.
+            let holderColor = dribbleInfo.isYellow ? yellow : blue;
+            let holderFrame = (dribbleInfo.isYellow ? yBotsFrame : bBotsFrame).children[dribbleInfo.id];
+            holderFrame.collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+            holderColor.holds[dribbleInfo.id] = false;
+            ball.reset(bp, Qt.vector3d(0, 0, 0));
+            ballPosition = Qt.vector4d(bp.x, bp.y, bp.z, 0);
+            dribbleInfo.id = -1;
+        }
+    }
+
     function botMovement(color, timestep, isYellow=false) {
         let botFrame = isYellow ? yBotsFrame : bBotsFrame;
 
@@ -406,6 +510,13 @@ Node {
 
             let botDistanceBall = Math.sqrt(Math.pow(frame.position.x - ballPosition.x, 2) + Math.pow(frame.position.z - ballPosition.z, 2));
             let botRadianBall = mu.normalizeRadian(Math.atan2(frame.position.z - ballPosition.z, frame.position.x - ballPosition.x) - Math.PI + color.poses[i].w);
+            // A robot that switched its dribbler off lets go of the ball. The holder's mouth test below is forced to
+            // pass, so without this the release branch can never run and the ball is carried for ever (the only way
+            // out was a kick). Keep holding while it asks to kick: the kick needs the ball in the mouth.
+            let asksKickNow = color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0;
+            if (!(color.spinners[i] > 0) && !asksKickNow) {
+                control.release(frame, isYellow, i, color);
+            }
             if (dribbleInfo.id != -1) {
                 if (isYellow == dribbleInfo.isYellow && i == dribbleInfo.id) {
                     botDistanceBall = 95;
@@ -413,13 +524,39 @@ Node {
                 }
             }
             if (botDistanceBall < 110 * Math.cos(Math.abs(botRadianBall)) && Math.abs(botRadianBall) < Math.PI/15.0 && ballPosition.y < 40) {
+                let kickKey = (isYellow ? "y" : "b") + i;
+                let asksKick = color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0;
+                if (ballContestWinner !== null && (ballContestWinner.id != i || ballContestWinner.isYellow != isYellow)) {
+                    kickDiag(kickKey, asksKick, "contest winner is " + (ballContestWinner.isYellow ? "y" : "b") + ballContestWinner.id);
+                    // The other robot has the ball: our mouth sensor must read empty. Leaving holds[i] stale kept RAVEN's
+                    // "touching" true and it fired into nothing for 0.5 s at a time (m33: 146 kick frames, 6 launches).
+                    color.holds[i] = false;
+                    continue;   // another robot has the ball this frame (resolveBallContest)
+                }
                 if (dribbleInfo.id != -1 && (dribbleInfo.id != i || isYellow != dribbleInfo.isYellow)) {
+                    kickDiag(kickKey, asksKick, "held by " + (dribbleInfo.isYellow ? "y" : "b") + dribbleInfo.id);
+                    color.holds[i] = false;
                     continue;
                 }
                 color.holds[i] = true;
-                if (!kickFlag && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0)) {
+                let recharged = !(kickKey in kickCooldown) || kickCooldown[kickKey] <= 0;
+                if (asksKick && !recharged) {
+                    kickDiag(kickKey, true, "not recharged (" + kickCooldown[kickKey] + " frames left)");
+                }
+                let relVx = (ballVelocity.x - color.velocities[i].x) * 1000.0;   // m/s -> mm/s
+                let relVz = (ballVelocity.z - color.velocities[i].z) * 1000.0;
+                let catchable = Math.hypot(relVx, relVz) < dribbleCatchMaxSpeedMmS
+                        || (dribbleInfo.id == i && dribbleInfo.isYellow == isYellow);   // already held: keep it
+                if (recharged && asksKick) {
+                    kickCooldown[kickKey] = kickRechargeFrames;
+                    // wall-clock ms so the line can be matched to RAVEN's MCAP (log_time) without guessing from positions
+                    console.log("[kick] " + kickKey + " fires " + Math.round(color.kickspeeds[i].x) + "/" + Math.round(color.kickspeeds[i].y) + " mm/s at ball ("
+                            + Math.round(ballPosition.x) + ", " + Math.round(ballPosition.z) + ") t=" + Date.now());
                     control.kick(color, frame, i, color.poses[i].w, ballVelocity);
-                } else if (color.spinners[i] > 0 && !kickFlag) {
+                } else if (color.spinners[i] > 0 && catchable && recharged) {
+                    // recharged: a robot that has just kicked does not re-catch the ball it launched (the body's reset
+                    // lands one frame later and the mouth test passes meanwhile; the ball is gone for real).
+
                     control.dribble(frame, isYellow, i, botRadianBall, botDistanceBall, color);
                 }
             } else {
@@ -437,8 +574,28 @@ Node {
         }
     }
 
+    // Diagnostics: a robot with the ball in its mouth asked to kick but could not. Logged at most once per second per robot.
+    property var kickDiagLast: ({})
+    property int diagFrame: 0
+    function kickDiag(kickKey, asksKick, why) {
+        if (!asksKick) {
+            return;
+        }
+        let now = diagFrame;
+        if (!(kickKey in kickDiagLast) || now - kickDiagLast[kickKey] >= 60) {
+            kickDiagLast[kickKey] = now;
+            console.log("[kick] " + kickKey + " asks to kick but cannot: " + why);
+        }
+    }
+
     function updateGameObjects(timestep) 
     {
+        diagFrame++;
+        for (let key in kickCooldown) {
+            if (kickCooldown[key] > 0) {
+                kickCooldown[key]--;
+            }
+        }
         ballVelocity = mu.calcVelocity(ballPosition, preBallPosition, timestep);
         ballAngularVelocity = mu.calcVelocity(ball.eulerRotation, preBallAngularPosition, timestep);
         let teleopSpeed = Math.sqrt(teleopVelocity.x * teleopVelocity.x
@@ -471,6 +628,7 @@ Node {
         preBallAngularPosition = ball.eulerRotation;
         ballReset = true;
         
+        resolveBallContest();
         botMovement(blue, timestep);
         botMovement(yellow, timestep, true);
 
@@ -531,6 +689,23 @@ Node {
         let vz0 = vz;
 
         let speed = Math.sqrt(vx * vx + vz * vz);
+
+        // Impact (wall, goal, robot): the velocity direction flipped or the speed jumped between two
+        // frames. The tracked spin still belongs to the motion BEFORE the impact, and the finite-
+        // difference velocity spans the impact, so applying slip friction here would drag the ball
+        // along its old spin and bend the rebound. Re-sync the spin to rolling with the new velocity
+        // and let this frame pass without a friction impulse.
+        let pvx = prevBallVelocity.x * 1000.0;
+        let pvz = prevBallVelocity.z * 1000.0;
+        let prevSpeed = Math.sqrt(pvx * pvx + pvz * pvz);
+        let impact = prevSpeed > 200.0 && speed > 200.0
+                && (vx * pvx + vz * pvz < 0.0 || speed > 1.5 * prevSpeed);
+        prevBallVelocity = linearVelocity;
+        if (impact) {
+            ballSpin = Qt.vector3d(vz / R, ballSpin.y, -vx / R);
+            ballBody.setAngularVelocity(ballSpin);
+            return;
+        }
         // Fully stop a crawling ball (there is no PhysX floor friction; friction is
         // modelled entirely here, so nothing else would ever bring it to rest).
         if (speed < 20.0) {
@@ -611,23 +786,44 @@ Node {
         );
     }
 
+    // Places the ball's PHYSICS body at scenePosition (grounded, y=21) and, if velocity
+    // is non-null, sets its linear velocity too; otherwise it is left at rest (reset()
+    // already zeroes it). Clears every piece of ball state that could otherwise fight
+    // the placement on a later tick (a deferred kick landing, stale tracked spin/velocity,
+    // an in-progress mouse-drag teleop throw), and un-parks any robot's ball-holding
+    // marker so dribble state doesn't linger against the newly placed ball. Shared by the
+    // mouse "place ball" shortcut and network Replacement so both behave identically.
+    function placeBall(scenePosition, velocity) {
+        teleopVelocity = Qt.vector4d(0, 0, 0, 0);
+        ballVelocity = Qt.vector4d(0, 0, 0, 0);
+        prevBallVelocity = Qt.vector3d(0, 0, 0);
+        ballSpin = Qt.vector3d(0, 0, 0);
+        pendingKickVelocity = null;
+        ball.reset(scenePosition, Qt.vector3d(0, 0, 0));
+        if (velocity !== null) {
+            ball.setLinearVelocity(velocity);
+        }
+        ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
+        ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
+        preBallPosition = ballPosition;
+        skipRollingFrictionFrames = 30;
+        // Release the dribbler hold too: while dribbleInfo points at a robot, botMovement() forces
+        // that robot's ball distance/angle to "held" and the next dribble() would snap the ball
+        // back onto its dribbler, so a placement could never take the ball away from a holder.
+        dribbleInfo.id = -1;
+        for (let i = 0; i < blue.num; i++) {
+            bBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+            blue.holds[i] = false;
+        }
+        for (let i = 0; i < yellow.num; i++) {
+            yBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+            yellow.holds[i] = false;
+        }
+    }
+
     function resetPosition(target, result) {
         if (target == "ball") {
-            teleopVelocity = Qt.vector4d(0, 0, 0, 0);
-            ballVelocity = Qt.vector4d(0, 0, 0, 0);
-            ballSpin = Qt.vector3d(0, 0, 0);
-            pendingKickVelocity = null;
-            ball.reset(result.scenePosition, Qt.vector3d(0, 0, 0));
-            ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
-            ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
-            preBallPosition = ballPosition;
-            skipRollingFrictionFrames = 30;
-            for (let i = 0; i < blue.num; i++) {
-                bBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
-            }
-            for (let i = 0; i < yellow.num; i++) {
-                yBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
-            }
+            placeBall(result.scenePosition, null);
         } else if (target == "bot") {
             if (selectedRobotColor == "blue") {
                 bBotsFrame.children[botCursorID].reset(result.scenePosition, Qt.vector3d(0, -90, 0));
@@ -722,16 +918,6 @@ Node {
         ballPositions[0] = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
     }
 
-    Timer {
-        id: kickTimer
-        interval: 1000
-        repeat: false
-        running: false
-        onTriggered: {
-            kickFlag = false;
-            kickTimer.running = false;
-        }
-    }
     Component.onCompleted: {
         
         for (let i = 0; i < observer.blueRobotCount; i++) {

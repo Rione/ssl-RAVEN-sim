@@ -35,8 +35,17 @@ void Sender::setPort(string address, quint16 newPort) {
 }
 
 void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions) {
-    t_capture = (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() - start_time)/1000.0;
-    // t_capture += 1/60.0;
+    // SIMULATION time, not wall clock. send() is called once per physics frame
+    // (Observer::updateObjects <- syncGameObjects <- PhysicsWorld::onFrameDone), and
+    // each physics frame advances exactly fixedFrameTime = 1/60 s of simulation.
+    // The previous wall-clock t_capture desynchronized vision time from physics time
+    // whenever the render loop ran off 60 fps (offscreen/headless: ~50 fps observed;
+    // occluded window: physics frozen while vision kept streaming stale poses),
+    // which scaled every observed velocity/acceleration by the render rate and
+    // produced duplicate-pose "stutter" frames. Deriving t_capture from the frame
+    // count keeps the vision stream consistent with the physics regardless of the
+    // render rate (this matches grSim / ER-Force, whose t_capture is sim time).
+    t_capture = captureCount / 60.0;
     for (int i = 0; i < 1; i++) {
         SSL_WrapperPacket packet;
 
