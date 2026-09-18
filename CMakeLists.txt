@@ -65,21 +65,24 @@ set(PROTO_GEN_DIR  ${PROTO_DIR}/pb_gen)
 
 file(MAKE_DIRECTORY ${PROTO_GEN_DIR})
 
-file(GLOB SRC_FILES
+# CONFIGURE_DEPENDS: ソースを足したときに cmake を掛け直さなくても build.make に載る。
+# 無いと、追加したファイルが既存の build/ では永遠にコンパイルされず、リンクで
+# 「Undefined symbols」になる (見た目は「make run できなくなった」)。
+file(GLOB SRC_FILES CONFIGURE_DEPENDS
     ${SRC_DIR}/*.cpp
     ${MODEL_DIR}/*.cpp
     ${NET_DIR}/*.cpp
     ${UTIL_DIR}/*.cpp
 )
 
-file(GLOB HEADER_FILES
+file(GLOB HEADER_FILES CONFIGURE_DEPENDS
     ${SRC_DIR}/*.h
     ${MODEL_DIR}/*.h
     ${NET_DIR}/*.h
     ${UTIL_DIR}/*.h
 )
 
-file(GLOB PROTO_FILES "${PROTO_SRC_DIR}/*.proto")
+file(GLOB PROTO_FILES CONFIGURE_DEPENDS "${PROTO_SRC_DIR}/*.proto")
 
 protobuf_generate_cpp(
     PROTO_SRCS
