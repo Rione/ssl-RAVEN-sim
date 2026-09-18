@@ -132,10 +132,19 @@ def emit_ini():
 def emit_raven(config_dir):
     """RAVEN の per-robot オーバーレイを書く。
 
-    ID 2/4/11 は書かない — RAVEN は ID が一致する実機ファイルを直接読むので、
-    同じ値を 2 箇所に置くと片方だけ直されてずれる。
+    EXACT の ID は書かない — RAVEN は ID が一致する実機ファイルを直接読むので、
+    同じ値を 2 箇所に置くと片方だけ直されてずれる。書かないだけでなく<b>消す</b>:
+    RAVEN は system_model_sim_ID<n>.yaml を実機ファイルより先に見るので、以前の生成が
+    残っていると実測値が影に入る (0918: ID12 が世代 D になった後も 10:42 のクローンが
+    残っていて、sim は実測 0.983 で動くのに RAVEN は 0.728 を仮定していた)。
     """
     written = []
+    removed = []
+    for rid in EXACT:
+        stale = config_dir / f"system_model_sim_ID{rid}.yaml"
+        if stale.exists():
+            stale.unlink()
+            removed.append(stale.name)
     for rid in range(16):
         if rid in EXACT:
             continue
@@ -156,7 +165,7 @@ def emit_raven(config_dir):
         path = config_dir / f"system_model_sim_ID{rid}.yaml"
         path.write_text("\n".join(lines) + "\n")
         written.append(path.name)
-    return written
+    return written, removed
 
 
 def main():
@@ -174,7 +183,10 @@ def main():
         if not d.is_dir():
             print(f"config ディレクトリが無い: {d}", file=sys.stderr)
             return 2
-        for name in emit_raven(d):
+        written, removed = emit_raven(d)
+        for name in removed:
+            print(f"removed {d / name} (実機ファイルを影に入れていた)")
+        for name in written:
             print(f"wrote {d / name}")
     return 0
 
