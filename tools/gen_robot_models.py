@@ -20,12 +20,13 @@ import sys
 
 # --- 実機 3 台の同定値 (RAVEN app/config/system_model_real_*_ID*.yaml の robot 節) ---
 BASE = {
-    'A': dict(src='ID2 (d83add4cb8bd)',
+    'A': dict(src='ID2 (d83add4cb8bd) 旧基板 Pi4',
               TauVxSec=0.04326035519210209, TauVySec=0.05136164374674227, TauOmegaSec=0.038527985065899314,
-              DeadTimeSec=0.14111119714831583,
-              TractionAccelXMmS2=5670.0, TractionAccelYMmS2=5104.0,
-              TractionDecelXMmS2=6592.0, TractionDecelYMmS2=3921.0,
-              GainVx=0.747, GainVy=0.629, GainVyFromUx=-0.073, GainVxFromUy=-0.098,
+              DeadTimeSec=0.087,
+              TractionAccelXMmS2=5549.0, TractionAccelYMmS2=3740.0,
+              TractionDecelXMmS2=4192.0, TractionDecelYMmS2=4736.0,
+              GainVx=0.756, GainVy=0.638, GainVyFromUx=-0.057, GainVxFromUy=-0.094,
+              GainOmega=0.937, MaxAngularVelRadS=8.42,
               WheelRimSpeedBudgetMmS=2250.0),
     'B': dict(src='ID4 (d83add1a09be)',
               TauVxSec=0.0366767807706137, TauVySec=0.03829272063369836, TauOmegaSec=0.0300531941413449,
@@ -33,6 +34,7 @@ BASE = {
               TractionAccelXMmS2=3971.0, TractionAccelYMmS2=1715.0,
               TractionDecelXMmS2=4735.0, TractionDecelYMmS2=3142.0,
               GainVx=0.942, GainVy=0.569, GainVyFromUx=0.0, GainVxFromUy=0.0,
+              GainOmega=1.0, MaxAngularVelRadS=10.0,
               WheelRimSpeedBudgetMmS=2250.0),
     'C': dict(src='ID11 (e0d55de88825)',
               TauVxSec=0.030093206349125306, TauVySec=0.025223797520654442, TauOmegaSec=0.02157840321679048,
@@ -40,12 +42,22 @@ BASE = {
               TractionAccelXMmS2=3434.0, TractionAccelYMmS2=1215.0,
               TractionDecelXMmS2=3850.0, TractionDecelYMmS2=1735.0,
               GainVx=0.928, GainVy=1.0, GainVyFromUx=-0.031, GainVxFromUy=0.0,
+              GainOmega=1.0, MaxAngularVelRadS=10.0,
+              WheelRimSpeedBudgetMmS=2000.0),
+    'D': dict(src='ID12 (20bd1dd3e050) 新基板',
+              TauVxSec=0.0366767807706137, TauVySec=0.03829272063369836, TauOmegaSec=0.0300531941413449,
+              DeadTimeSec=0.063,
+              TractionAccelXMmS2=3778.0, TractionAccelYMmS2=2060.0,
+              TractionDecelXMmS2=2053.0, TractionDecelYMmS2=924.0,
+              GainVx=0.983, GainVy=0.776, GainVyFromUx=-0.02, GainVxFromUy=0.002,
+              GainOmega=0.956, MaxAngularVelRadS=9.72,
               WheelRimSpeedBudgetMmS=2000.0),
 }
 
-# 回転の上限。今のところ機体差を測っていないので全機共通 (RAVEN の physics.yaml の計画上限と同値)。
-# 機体ごとに測ったらここを世代別にする。
-COMMON = dict(MaxAngularVelRadS=10.0, MaxAngularAccelRadS2=35.0)
+# 回転の角加速度だけ全機共通。60 Hz の vision では立ち上がりが 2〜3 フレームで終わり分解できないので、
+# 保守側の計画上限を置く (0918 実機の実測は id 2 が 339・id 12 が 129 rad/s² で、どちらも 35 より速い)。
+# 回転のゲインと最大角速度は BASE で世代ごとに持つ (0918 に --traction で測った)。
+COMMON = dict(MaxAngularAccelRadS2=35.0)
 
 # ばらつきの幅 (±)。実機 3 台の世代差より十分小さく、個体差として妥当な範囲に収める。
 SPREAD = {
@@ -54,16 +66,17 @@ SPREAD = {
     'TractionAccelXMmS2': 0.12, 'TractionAccelYMmS2': 0.12,
     'TractionDecelXMmS2': 0.12, 'TractionDecelYMmS2': 0.12,
     'GainVx': 0.05, 'GainVy': 0.05, 'GainVyFromUx': 0.15, 'GainVxFromUy': 0.15,
+    'GainOmega': 0.03, 'MaxAngularVelRadS': 0.08,
     'WheelRimSpeedBudgetMmS': 0.04,
 }
 
 # id -> 母体の世代。2/4/11 はその実機そのもの。
-GEN = ['A', 'B', 'A', 'B', 'B', 'C', 'A', 'C', 'B', 'A', 'C', 'C', 'A', 'B', 'C', 'A']
-EXACT = {2: 'A', 4: 'B', 11: 'C'}
+GEN = ['A', 'B', 'A', 'B', 'B', 'C', 'D', 'C', 'B', 'D', 'C', 'C', 'D', 'B', 'D', 'A']
+EXACT = {2: 'A', 4: 'B', 11: 'C', 12: 'D'}
 
 ORDER = ['TauVxSec', 'TauVySec', 'TauOmegaSec', 'DeadTimeSec',
          'TractionAccelXMmS2', 'TractionAccelYMmS2', 'TractionDecelXMmS2', 'TractionDecelYMmS2',
-         'GainVx', 'GainVy', 'GainVyFromUx', 'GainVxFromUy', 'WheelRimSpeedBudgetMmS',
+         'GainVx', 'GainVy', 'GainVyFromUx', 'GainVxFromUy', 'GainOmega', 'WheelRimSpeedBudgetMmS',
          'MaxAngularVelRadS', 'MaxAngularAccelRadS2']
 
 # sim の ini のキー -> RAVEN の system_model robot 節のキー。
@@ -74,6 +87,7 @@ RAVEN_KEY = {
     'TractionDecelXMmS2': 'traction_decel_x_mm_s2', 'TractionDecelYMmS2': 'traction_decel_y_mm_s2',
     'GainVx': 'gain_vx', 'GainVy': 'gain_vy',
     'GainVyFromUx': 'gain_vy_from_ux', 'GainVxFromUy': 'gain_vx_from_uy',
+    'GainOmega': 'gain_omega',
     'WheelRimSpeedBudgetMmS': 'wheel_rim_speed_budget_mm_s',
     'MaxAngularVelRadS': 'max_angular_velocity',
     'MaxAngularAccelRadS2': 'max_angular_acceleration',
