@@ -30,7 +30,8 @@ BASE = {
     'A': dict(src='ID2 (d83add4cb8bd) 旧基板 Pi4',
               TauVxSec=0.04326035519210209, TauVySec=0.05136164374674227, TauOmegaSec=0.038527985065899314,
               DeadTimeSec=0.087,
-              TractionAccelXMmS2=5549.0, TractionAccelYMmS2=3740.0,
+              # 前後の加速は 2026-09-19 会場の段差 (位置に 遅れ→一定加速→頭打ち を当てはめ、± の小さい方)。左右は 0918 研究室。
+              TractionAccelXMmS2=4269.0, TractionAccelYMmS2=3740.0,
               TractionDecelXMmS2=4192.0, TractionDecelYMmS2=4736.0,
               # ゲインは 2026-09-19 の試合 (12 m 場) の記録を raw vision で読んだ値。0918 研究室の段差の 0.756/0.638 は
               # 低すぎて、RAVEN が id 2 を 15〜25 % 過剰に駆動していた (RAVEN 68713432)。他の 5 台も 0.88〜0.90 / 0.83〜0.85。
