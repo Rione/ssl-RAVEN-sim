@@ -35,15 +35,17 @@ sudo apt update
 sudo apt install libeigen3-dev protobuf-compiler libyaml-cpp-dev cmake build-essential libassimp-dev assimp-utils libbullet-dev libboost-all-dev
 ```
 
-### 2. Preparing 3D Models
-Please read [how to import custom 3D model](docs/import_model.md)
+### 2. 3D Models
+The 3D models the simulator needs are committed under `assets/`, so a clone is
+ready to run as it is. There is nothing to download.
 
-To properly visualize the simulation, download the required 3D models and place them in the following directory:
-```
-~/ws/m2-sim/assets/
-```
+`src/qml/sim/Field.qml` and `GameObjects.qml` import directories under
+`assets/`, and a missing import directory is a fatal QML error, so the
+application starts with no window if `assets/` is absent.
 
-You can download sample 3D models from the following link:  
+To replace the models with your own, see
+[how to import custom 3D model](docs/import_model.md). Sample models are also
+available here:
 [Download 3D Models](https://drive.google.com/drive/folders/17iXSCv_ecgYn4Mx0ziXjV6I9hVO665dg?usp=share_link)
 
 
