@@ -32,7 +32,9 @@ BASE = {
               DeadTimeSec=0.087,
               TractionAccelXMmS2=5549.0, TractionAccelYMmS2=3740.0,
               TractionDecelXMmS2=4192.0, TractionDecelYMmS2=4736.0,
-              GainVx=0.756, GainVy=0.638, GainVyFromUx=-0.057, GainVxFromUy=-0.094,
+              # ゲインは 2026-09-19 の試合 (12 m 場) の記録を raw vision で読んだ値。0918 研究室の段差の 0.756/0.638 は
+              # 低すぎて、RAVEN が id 2 を 15〜25 % 過剰に駆動していた (RAVEN 68713432)。他の 5 台も 0.88〜0.90 / 0.83〜0.85。
+              GainVx=0.88, GainVy=0.83, GainVyFromUx=-0.036, GainVxFromUy=-0.028,
               GainOmega=0.937, MaxAngularVelRadS=8.42,
               WheelRimSpeedBudgetMmS=2250.0),
     'B': dict(src='ID4 (d83add1a09be)',
