@@ -7,6 +7,12 @@ sim の `[RobotModel.<id>]` と RAVEN の `system_model_sim_ID<n>.yaml` は同�
 
   python3 tools/gen_robot_models.py --print-ini          # sim の [RobotModel.*] を標準出力へ
   python3 tools/gen_robot_models.py --write-raven <dir>  # RAVEN の app/config へ yaml を書く
+  python3 tools/gen_robot_models.py --ball <dir>         # 球のモデルを実機の測定から 3 か所へ配る
+
+球のモデル (減速・跳ね返り) も 3 か所にある: RAVEN の実機ベース system_model_real.yaml・
+RAVEN の sim ベース system_model_sim.yaml・sim の config_v2.ini [BallModel]。測るのは実機
+(--kick-cal が BallFrictionAnalysis の結果を system_model_real.yaml に書く) の 1 回だけなので、
+そこを源にして残り 2 つへ写す。sim は<b>実機の球を真似る</b>ので同じ値でよい。
 
 値の出どころ: ssl-RAVEN app/config/system_model_real_<mac>_ID<n>.yaml (実機 3 台の同定値)。
 ID 2/4/11 は同定値そのままなので sim の ini にだけ出し、RAVEN 側は実機ファイルを直接使う
@@ -16,6 +22,7 @@ ID 2/4/11 は同定値そのままなので sim の ini にだけ出し、RAVEN 
 import argparse
 import hashlib
 import pathlib
+import re
 import sys
 
 # --- 実機 3 台の同定値 (RAVEN app/config/system_model_real_*_ID*.yaml の robot 節) ---
@@ -168,12 +175,112 @@ def emit_raven(config_dir):
     return written, removed
 
 
+# --- 球のモデル: 実機の測定 (RAVEN の system_model_real.yaml) を源に 3 か所へ配る ---
+
+# RAVEN の yaml のキー -> sim の ini のキー。ここに無い欄は写さない。
+BALL_KEY = {
+    'acc_slide_mm_s2': 'AccSlideMmS2',
+    'acc_roll_mm_s2': 'AccRollMmS2',
+    'k_switch': 'KSwitch',
+    'direct_kick.normal_restitution': 'DirectKickNormalRestitution',
+    'direct_kick.tangent_retention': 'DirectKickTangentRetention',
+}
+
+
+def read_ball_model(yaml_path):
+    """yaml の ball_model 節を {キー: 値の文字列} で返す。入れ子は '親.子' で平らにする。
+
+    yaml の丸ごとの読み書きはしない (PyYAML を要らなくする・他の節に触らないため)。
+    機械が書いたファイルなので、2 空白の字下げだけを見れば足りる。
+    """
+    out = {}
+    depth = None
+    parent = None
+    for line in yaml_path.read_text(encoding='utf-8').splitlines():
+        if line.strip().startswith('#') or not line.strip():
+            continue
+        if not line.startswith(' '):
+            depth = 0 if line.startswith('ball_model:') else None
+            parent = None
+            continue
+        if depth is None:
+            continue
+        m = re.match(r'^( +)([A-Za-z0-9_]+):\s*(.*)$', line)
+        if not m:
+            continue
+        indent, key, value = len(m.group(1)), m.group(2), m.group(3).strip()
+        if indent == 2:
+            parent = None
+            if value:
+                out[key] = value
+            else:
+                parent = key
+        elif indent == 4 and parent and value:
+            out[f'{parent}.{key}'] = value
+    return out
+
+
+def write_ball_model(yaml_path, ball):
+    """yaml の ball_model 節を置き換える。他の節には触らない。"""
+    lines = yaml_path.read_text(encoding='utf-8').splitlines()
+    out, i, replaced = [], 0, False
+    while i < len(lines):
+        if lines[i].startswith('ball_model:'):
+            out.extend(ball_yaml_block(ball))
+            i += 1
+            while i < len(lines) and (lines[i].startswith(' ') or not lines[i].strip()):
+                i += 1
+            replaced = True
+            continue
+        out.append(lines[i])
+        i += 1
+    if not replaced:
+        out.extend(ball_yaml_block(ball))
+    yaml_path.write_text('\n'.join(out) + '\n', encoding='utf-8')
+
+
+def ball_yaml_block(ball):
+    lines = ['ball_model:']
+    for key in ('acc_slide_mm_s2', 'acc_roll_mm_s2', 'k_switch'):
+        if key in ball:
+            lines.append(f'  {key}: {ball[key]}')
+    nested = {k: v for k, v in ball.items() if '.' in k}
+    for parent in sorted({k.split('.')[0] for k in nested}):
+        lines.append(f'  {parent}:')
+        for k, v in sorted(nested.items()):
+            if k.startswith(parent + '.'):
+                lines.append(f'    {k.split(".")[1]}: {v}')
+    return lines
+
+
+def write_ball_ini(ini_path, ball):
+    """sim の ini の [BallModel] 節を置き換える。他の節には触らない。"""
+    lines = ini_path.read_text(encoding='utf-8', errors='replace').splitlines()
+    block = ['[BallModel]'] + [f'{BALL_KEY[k]}={ball[k]}' for k in BALL_KEY if k in ball] + ['']
+    out, i, replaced = [], 0, False
+    while i < len(lines):
+        if lines[i].strip() == '[BallModel]':
+            out.extend(block)
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith('['):
+                i += 1
+            replaced = True
+            continue
+        out.append(lines[i])
+        i += 1
+    if not replaced:
+        out.extend([''] + block)
+    ini_path.write_text('\n'.join(out) + '\n', encoding='utf-8')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--print-ini", action="store_true", help="sim の [RobotModel.*] を標準出力へ")
     ap.add_argument("--write-raven", metavar="CONFIG_DIR", help="RAVEN の app/config へ yaml を書く")
+    ap.add_argument("--ball", metavar="CONFIG_DIR",
+                    help="球のモデルを RAVEN の system_model_real.yaml から sim ベースと config_v2.ini へ配る")
     args = ap.parse_args()
-    if not args.print_ini and not args.write_raven:
+    if not args.print_ini and not args.write_raven and not args.ball:
         ap.print_help()
         return 1
     if args.print_ini:
@@ -188,6 +295,27 @@ def main():
             print(f"removed {d / name} (実機ファイルを影に入れていた)")
         for name in written:
             print(f"wrote {d / name}")
+    if args.ball:
+        d = pathlib.Path(args.ball)
+        source = d / "system_model_real.yaml"
+        if not source.is_file():
+            print(f"球の測定が無い: {source}", file=sys.stderr)
+            return 2
+        ball = read_ball_model(source)
+        if not ball:
+            print(f"{source} に ball_model 節が無い", file=sys.stderr)
+            return 2
+        print("球のモデル (源: " + str(source) + ")")
+        for k, v in ball.items():
+            print(f"  {k}: {v}")
+        sim_base = d / "system_model_sim.yaml"
+        if sim_base.is_file():
+            write_ball_model(sim_base, ball)
+            print(f"wrote {sim_base}")
+        ini = pathlib.Path(__file__).resolve().parent.parent / "config" / "config_v2.ini"
+        if ini.is_file():
+            write_ball_ini(ini, ball)
+            print(f"wrote {ini}")
     return 0
 
 
