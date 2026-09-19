@@ -24,9 +24,14 @@ public:
             &engine,
             &QQmlApplicationEngine::objectCreated,
             &engine,
-            [mainQmlUrl](QObject *obj, const QUrl &objUrl) {
-                if (!obj && objUrl == mainQmlUrl) {
-                    qCritical() << "Failed to load QML:" << mainQmlUrl;
+            // objUrl is the URL Qt resolved (absolute, file:///...), while
+            // mainQmlUrl is relative, so comparing the two never matched and
+            // the exit below never ran: a failed load left the process alive
+            // with no window and no exit code. This engine loads exactly one
+            // component, so a null obj is enough to know the load failed.
+            [](QObject *obj, const QUrl &objUrl) {
+                if (!obj) {
+                    qCritical() << "Failed to load QML:" << objUrl;
                     QCoreApplication::exit(-1);
                 }
             },
