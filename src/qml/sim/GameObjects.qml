@@ -97,22 +97,25 @@ Node {
                 blue.velTangents[i] = observer.blue_robots[i].veltangent;
                 
                 blue.velAngulars[i] = observer.blue_robots[i].velangular;
-                blue.kickspeeds[i] = Qt.vector3d(observer.blue_robots[i].kickspeedx, observer.blue_robots[i].kickspeedz, observer.blue_robots[i].kickspeedx);
                 blue.spinners[i] = observer.blue_robots[i].spinner;
             }
         }
         // Robot::advanceActuation が 1 tick 進むたび。むだ時間と一次遅れの立ち上がりを
-        // 取りこぼさないよう、速度だけを毎フレーム読み直す (kick/dribble には触らない)。
+        // 取りこぼさないよう、実際に台へ効いている値 (速度と、放電する蹴り) を毎フレーム
+        // 読み直す。蹴りをここで読むのは、それが速度と同じむだ時間の線を通って出てくるから:
+        // 指令パケットが届いた瞬間に読むと、まだ線の中に居る蹴りを先に撃ってしまう。
         function onActuationAdvanced() {
             for (var i = 0; i < blue.num; i++) {
                 blue.velNormals[i] = observer.blue_robots[i].velnormal;
                 blue.velTangents[i] = observer.blue_robots[i].veltangent;
                 blue.velAngulars[i] = observer.blue_robots[i].velangular;
+                blue.kickspeeds[i] = Qt.vector3d(observer.blue_robots[i].kickspeedx, observer.blue_robots[i].kickspeedz, observer.blue_robots[i].kickspeedx);
             }
             for (var j = 0; j < yellow.num; j++) {
                 yellow.velNormals[j] = observer.yellow_robots[j].velnormal;
                 yellow.velTangents[j] = observer.yellow_robots[j].veltangent;
                 yellow.velAngulars[j] = observer.yellow_robots[j].velangular;
+                yellow.kickspeeds[j] = Qt.vector3d(observer.yellow_robots[j].kickspeedx, observer.yellow_robots[j].kickspeedz, observer.yellow_robots[j].kickspeedx);
             }
         }
         function onYellowRobotsChanged() {
@@ -120,7 +123,6 @@ Node {
                 yellow.velNormals[i] = observer.yellow_robots[i].velnormal;
                 yellow.velTangents[i] = observer.yellow_robots[i].veltangent;
                 yellow.velAngulars[i] = observer.yellow_robots[i].velangular;
-                yellow.kickspeeds[i] = Qt.vector3d(observer.yellow_robots[i].kickspeedx, observer.yellow_robots[i].kickspeedz, observer.yellow_robots[i].kickspeedx);
                 yellow.spinners[i] = observer.yellow_robots[i].spinner;
             }
         }

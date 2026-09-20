@@ -78,6 +78,7 @@ private:
     void processMoveCommand(const RobotMoveCommand &moveCommand);
 
     uint32_t id;
+    // 実際に放電する蹴り (むだ時間を通ったあと)。QML が読むのはこちら。
     float kickspeedx;
     float kickspeedz;
     float veltangent;
@@ -98,6 +99,10 @@ private:
     float cmdTangent = 0.0f;
     float cmdNormal = 0.0f;
     float cmdAngular = 0.0f;
+    // 蹴りの生指令。実機では蹴りの指令も速度の指令と同じ線 (無線 → Pi → メインボード) を通るので、
+    // 同じむだ時間だけ遅れて放電する。kickspeedx/kickspeedz は遅らせたあとの値。
+    float cmdKickSpeedX = 0.0f;
+    float cmdKickSpeedZ = 0.0f;
     float appliedTangent = 0.0f;
     float appliedNormal = 0.0f;
     float appliedAngular = 0.0f;
@@ -105,6 +110,8 @@ private:
     std::deque<float> delayBufTangent;
     std::deque<float> delayBufNormal;
     std::deque<float> delayBufAngular;
+    std::deque<float> delayBufKickX;
+    std::deque<float> delayBufKickZ;
 
     // 指令を buf に積み、deadTimeSec ぶん前の値を返す (輸送遅れ)。
     static float delayed(std::deque<float> &buf, float cmd, float deadTimeSec, float dtSec);

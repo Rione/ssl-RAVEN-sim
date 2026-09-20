@@ -21,10 +21,11 @@ Robot::~Robot() = default;
 
 void Robot::visionUpdate(mocSim_Robot_Command robotCommand) {
     id = robotCommand.id();
-    kickspeedx = robotCommand.kickspeedx()*1000.0;
-    kickspeedz = robotCommand.kickspeedz()*1000.0;
-    // Velocity goes through the actuation delay model (advanceActuation), not
-    // straight to veltangent/velnormal/velangular which hold the applied value.
+    // Kick and velocity both go through the actuation delay model
+    // (advanceActuation); kickspeedx/kickspeedz and veltangent/velnormal/
+    // velangular hold the applied values.
+    cmdKickSpeedX = robotCommand.kickspeedx()*1000.0;
+    cmdKickSpeedZ = robotCommand.kickspeedz()*1000.0;
     cmdTangent = robotCommand.veltangent()*1000.0;
     cmdNormal = robotCommand.velnormal()*1000.0;
     cmdAngular = robotCommand.velangular();
@@ -50,11 +51,11 @@ void Robot::controlUpdate(RobotCommand robotCommand) {
         double length = cos(kickAngle) * kickSpeed;
         double z = sin(kickAngle) * kickSpeed;
         
-        kickspeedx = length;
-        kickspeedz = z;
+        cmdKickSpeedX = length;
+        cmdKickSpeedZ = z;
     } else {
-        kickspeedx = 0;
-        kickspeedz = 0;
+        cmdKickSpeedX = 0;
+        cmdKickSpeedZ = 0;
     }
 
     spinner = 0.0;
@@ -165,6 +166,8 @@ void Robot::resetMotion() {
     kickspeedz = 0.0f;
     spinner = 0.0f;
 
+    cmdKickSpeedX = 0.0f;
+    cmdKickSpeedZ = 0.0f;
     cmdTangent = 0.0f;
     cmdNormal = 0.0f;
     cmdAngular = 0.0f;
@@ -180,10 +183,12 @@ void Robot::resetMotion() {
     delayBufTangent.clear();
     delayBufNormal.clear();
     delayBufAngular.clear();
+    delayBufKickX.clear();
+    delayBufKickZ.clear();
 }
 
-// 指令 (cmd*) から実際に台へ与える速度 (veltangent/velnormal/velangular) までを
-// 1 tick 進める。実機の同定モデルの順で効かせる:
+// 指令 (cmd*) から実際に台へ与える速度 (veltangent/velnormal/velangular) と
+// 放電する蹴り (kickspeedx/kickspeedz) までを 1 tick 進める。実機の同定モデルの順で効かせる:
 //   むだ時間 → 定常ゲイン → 角速度上限 → 車輪周速の予算 → 一次遅れ → 軸別の加減速上限
 // 既定のモデル (設定なし) では素通しになる。
 void Robot::advanceActuation(float dtSec) {
@@ -195,6 +200,13 @@ void Robot::advanceActuation(float dtSec) {
     const float ux = delayed(delayBufTangent, cmdTangent, model.deadTimeSec, dtSec);
     const float uy = delayed(delayBufNormal, cmdNormal, model.deadTimeSec, dtSec);
     const float uw = delayed(delayBufAngular, cmdAngular, model.deadTimeSec, dtSec);
+
+    // 蹴りの指令も同じ線を通る: 実機では「撃て」が無線 → Pi → メインボードと渡って
+    // はじめて放電するので、速度と同じだけ遅れる。すぐ効かせると、回りながら撃った蹴りが
+    // 遅れた向きではなく指令を出した瞬間の向きへ飛び、台の回転の速さに関わらず当たってしまう
+    // (RAVEN 側は放電の時刻の向きで狙いを決めているので、sim だけがその予測を無意味にしていた)。
+    kickspeedx = delayed(delayBufKickX, cmdKickSpeedX, model.deadTimeSec, dtSec);
+    kickspeedz = delayed(delayBufKickZ, cmdKickSpeedZ, model.deadTimeSec, dtSec);
 
     // 定常ゲイン: 指令どおりの速さは出ないし、前進指令が少し横に漏れる。
     float targetX = model.gainVx * ux + model.gainVxFromUy * uy;
