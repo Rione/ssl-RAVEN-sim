@@ -10,7 +10,18 @@ QtObject {
         // 止めずに蹴った球だけが e·v_n ぶん遅く出る (0924 RAVEN passdrill: 1.4 m/s で来た球を 2.5 m/s 相当で
         // 撃ったのに 0.66 m/s で角に届いた)
         let held = ball.position.x > 50000;
-        let vin = held ? Qt.vector3d(0, 0, 0) : Qt.vector3d(ballVelocity.x * 1000.0, 0, ballVelocity.z * 1000.0);  // m/s -> mm/s
+        // 反発を乗せるのは本当に転がって来た球だけ: 口の前で体に押されている球の位置の差分は当たり判定の押し出しで
+        // 跳ね (1 フレームで数 m/s)、そのまま使うと蹴り出しの向きが暴れる。台との相対速度が 500 mm/s を超え、
+        // 蹴りで出せる速さの内 (8 m/s) のときだけ来た球と見る
+        let vin = Qt.vector3d(0, 0, 0);
+        if (!held) {
+            let bx = ballVelocity.x * 1000.0, bz = ballVelocity.z * 1000.0;   // m/s -> mm/s
+            let rx = color.velocities[i].x * 1000.0, rz = color.velocities[i].z * 1000.0;
+            let rel = Math.hypot(bx - rx, bz - rz);
+            if (rel > 500.0 && Math.hypot(bx, bz) < 8000.0) {
+                vin = Qt.vector3d(bx, 0, bz);
+            }
+        }
 
         frame.collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
         if (held) {
