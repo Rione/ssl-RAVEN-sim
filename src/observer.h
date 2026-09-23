@@ -168,6 +168,7 @@ signals:
     );
     void updateSenderData(QVector3D ball, QList<QVector3D> blue, QList<QVector3D> yellow);
     void updateSimulationSignal();
+    void visionPacketSent();
     // 1 物理フレームぶん同定モデルを進めたあと。QML はこれを受けて各台の適用速度を
     // 読み直す。blueRobotsChanged と違って kick/dribble の指令は触らないので、
     // 毎フレーム鳴らしてもキックを取りこぼしたり二度撃ちしたりしない。

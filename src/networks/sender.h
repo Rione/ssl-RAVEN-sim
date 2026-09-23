@@ -25,6 +25,9 @@ public:
     void setDetectionInfo(SSL_DetectionFrame &detection, int camera_num, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions);
     SSL_GeometryData setGeometryInfo();
 
+signals:
+    void packetSent();
+
 private:
     boost::asio::io_context ioContext_;
     boost::asio::ip::udp::socket socket_;

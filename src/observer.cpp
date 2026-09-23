@@ -36,6 +36,7 @@ Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_
     connect(visionReceiver, &VisionReceiver::receivedPacket, this, &Observer::visionReceive);
     connect(controlBlueReceiver, &ControlBlueReceiver::receivedPacket, this, &Observer::controlReceive);
     connect(controlYellowReceiver, &ControlYellowReceiver::receivedPacket, this, &Observer::controlReceive);
+    connect(sender, &Sender::packetSent, this, &Observer::visionPacketSent);
     connect(this, &Observer::sendBotBallContacts, controlBlueReceiver, &ControlBlueReceiver::updateBallContacts);
     connect(this, &Observer::sendBotBallContacts, controlYellowReceiver, &ControlYellowReceiver::updateBallContacts);
 

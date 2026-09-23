@@ -30,9 +30,28 @@ Window {
     property real showRunTime: fixedFrameTime
     property var selectedCamera: "Overview Camera"
     property real lastTime: 0
+    // Count successful UDP sends against wall-clock time, independently of render FPS.
+    property int visionFramesInRateWindow: 0
+    property real visionSendHz: 0
+    property double visionRateSampleTime: Date.now()
     property int key: 0
     property var ballPosition: Qt.vector4d(0, 0, 0, 0)
     property var isFoundBall: true
+
+    Timer {
+        interval: 500
+        running: true
+        repeat: true
+        onTriggered: {
+            const now = Date.now();
+            const elapsedMs = now - window.visionRateSampleTime;
+            if (elapsedMs > 0) {
+                window.visionSendHz = window.visionFramesInRateWindow * 1000.0 / elapsedMs;
+            }
+            window.visionFramesInRateWindow = 0;
+            window.visionRateSampleTime = now;
+        }
+    }
 
     Item {
         width: parent.width
@@ -210,6 +229,17 @@ Window {
                     color: "white"
                     horizontalAlignment: Text.AlignLeft
                     text: "FPS: " +  Math.round(1000.0 / showRunTime)
+                    opacity: 0.7
+                }
+                Text {
+                    id: visionRateText
+                    width: 150
+                    x: 5
+                    y: windowHeight - 43
+                    font.pixelSize: 15
+                    color: "white"
+                    horizontalAlignment: Text.AlignLeft
+                    text: "Vision TX: " + visionSendHz.toFixed(1) + " Hz"
                     opacity: 0.7
                 }
 
@@ -508,6 +538,9 @@ onWheel: (wheel) => {
                 emptyObjects2.syncEmptyObjects(runTime);
             }
             showRunTime = runTime;
+        }
+        function onVisionPacketSent() {
+            window.visionFramesInRateWindow += 1;
         }
     }
     onSelectedCameraChanged: {

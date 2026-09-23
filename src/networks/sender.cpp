@@ -77,6 +77,8 @@ void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue
         socket_.send_to(boost::asio::buffer(serializedData), endpoint_, 0, ec);
         if (ec) {
             std::cerr << "[Sender] send failed: " << ec.message() << std::endl;
+        } else {
+            emit packetSent();
         }
     }
     geometryCount++;
