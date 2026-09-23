@@ -37,6 +37,8 @@ Node {
     // blocked every robot's kick AND dribbling for 1 s: with an opponent that kicks often, the other team could
     // hardly ever kick or hold the ball. The kicker capacitor is per robot, and the dribbler is independent of it.
     property int kickRechargeFrames: 60
+    // 口の半幅 [mm]: RAVEN の pickup_mouth_half_width_mm と同じ。球がこの横ずれの内で板の前に在れば口の中 (持てる・蹴れる)
+    property real mouthHalfWidthMm: 45
     property var kickCooldown: ({})
     // A dribbler cannot catch a ball that passes it faster than this (mm/s, relative to the robot). Without
     // this limit a robot that kicks with its dribbler running re-catches the ball in the launch frame and the
@@ -580,7 +582,11 @@ Node {
                     botRadianBall = 0;
                 }
             }
-            if (botDistanceBall < 110 * Math.cos(Math.abs(botRadianBall)) && Math.abs(botRadianBall) < Math.PI/15.0 && ballPosition.y < 40) {
+            // 口の窓: 板の前 110 mm・横は口の半幅 (RAVEN の pickup_mouth_half_width_mm = 45 mm、95 mm 先で ±25°)。
+            // ±12° (π/15) だと、斜めに来た球を止めずに蹴る (RAVEN の ONE_TOUCH: 来る方向と出す方向の間を向いて構え、
+            // 球は向きから 20〜40° ずれて入る) が sim では一度も当たらない (0924 passdrill: 4 本とも脇を通過)
+            if (botDistanceBall < 110 * Math.cos(Math.abs(botRadianBall))
+                    && Math.abs(botDistanceBall * Math.sin(botRadianBall)) < mouthHalfWidthMm && ballPosition.y < 40) {
                 let kickKey = (isYellow ? "y" : "b") + i;
                 let asksKick = color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0;
                 if (ballContestWinner !== null && (ballContestWinner.id != i || ballContestWinner.isYellow != isYellow)) {
