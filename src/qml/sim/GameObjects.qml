@@ -65,10 +65,15 @@ Node {
     // 球が完全に無摩擦で転がっていた。0918 実測: 3000 mm/s で置くと 0.45 s / 1350 mm を
     // 一切減速せずに直進し、RAVEN の到達予測がそのぶん丸ごと外れていた。
     property int skipRollingFrictionFrames: 0
+<<<<<<< HEAD
     readonly property int placementSettleFrames: 2
     // Ball physical constants (scene length units are mm). 42 mm diameter golf ball.
     // Mass is kilograms — same unit as robot DynamicRigidBody.mass (2.5 kg).
     // Was wrongly 46.0 (=46 kg, ~1000× SSL ball) which made the ball heavier than robots.
+=======
+    // Ball physical constants (scene units are mm). 42 mm diameter, ~46 g golf ball.
+    // Mass is in kg, the same unit as the robot bodies (2.5 kg): 46 g is 0.046, not 46.
+>>>>>>> origin/master
     property real ballRadius: 21.0
     property real ballMass: 0.046
     // Angular velocity of the ball we integrate ourselves (rad/s). PhysX does not expose
