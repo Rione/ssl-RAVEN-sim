@@ -22,7 +22,7 @@ C++ 約 1,980 行 / QML 約 3,550 行。**行数でも責務でも QML 側が主
 
 | パス | 役割 |
 |---|---|
-| `src/observer.*` | 中枢。設定・通信結線・60Hz タイマ・エンコーダ合成 |
+| `src/observer.*` | 中枢。設定・通信結線・物理刻み連携・エンコーダ合成 |
 | `src/networks/` | UDP 受信 3 クラス・送信 2 クラス |
 | `src/models/` | Robot の状態と遅延モデル、座標投影 |
 | `src/qml/sim/` | **シミュレーション本体**（物理・キック・摩擦） |
@@ -58,4 +58,5 @@ C++ 約 1,980 行 / QML 約 3,550 行。**行数でも責務でも QML 側が主
 - 操作方法: `docs/key_mouse.md`
 - 実機同定モデル（台の運動・球の減速）: `docs/robot_motion_model.md`
 - エンコーダフィードバック: `docs/encoder_feedback.md`
+- Vision の更新周期・計測結果: `docs/vision-update-rate.md`
 - 3D モデルの導入: `docs/import_model.md`
