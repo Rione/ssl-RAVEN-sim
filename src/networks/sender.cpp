@@ -39,18 +39,18 @@ void Sender::setPort(string address, quint16 newPort) {
     endpoint_ = boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(address), port);
 }
 
-void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions) {
+void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions, double timestepSec) {
+    if (!std::isfinite(timestepSec) || timestepSec <= 0.0) {
+        std::cerr << "[Sender] ignoring invalid simulation timestep: " << timestepSec << std::endl;
+        return;
+    }
+
     // SIMULATION time, not wall clock. send() is called once per physics frame
     // (Observer::updateObjects <- syncGameObjects <- PhysicsWorld::onFrameDone), and
-    // each physics frame advances exactly fixedFrameTime = 1/60 s of simulation.
-    // The previous wall-clock t_capture desynchronized vision time from physics time
-    // whenever the render loop ran off 60 fps (offscreen/headless: ~50 fps observed;
-    // occluded window: physics frozen while vision kept streaming stale poses),
-    // which scaled every observed velocity/acceleration by the render rate and
-    // produced duplicate-pose "stutter" frames. Deriving t_capture from the frame
-    // count keeps the vision stream consistent with the physics regardless of the
-    // render rate (this matches grSim / ER-Force, whose t_capture is sim time).
-    t_capture = captureCount / 60.0;
+    // each physics frame advances by the timestep reported by PhysicsWorld.
+    // Accumulating the actual step keeps this timestamp on the same simulation
+    // timeline as the poses, even when PhysicsWorld uses a step shorter than 1/60 s.
+    t_capture += timestepSec;
     for (int i = 0; i < 1; i++) {
         SSL_WrapperPacket packet;
 

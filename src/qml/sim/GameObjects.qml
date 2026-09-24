@@ -824,7 +824,7 @@ Node {
         ballBody.setAngularVelocity(ballSpin);
     }
 
-    function syncGameObjects() {
+    function syncGameObjects(timestepMs) {
         let blueBotData = sync.updateBot(blue, false);
         let yellowBotData = sync.updateBot(yellow, true);
         sync.updateBall();
@@ -838,7 +838,8 @@ Node {
             blueBotData.ballContacts, 
             yellowBotData.ballContacts,
             ballPosition,
-            isFoundBall
+            isFoundBall,
+            timestepMs
         );
     }
 

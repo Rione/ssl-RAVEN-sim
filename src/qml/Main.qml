@@ -27,7 +27,6 @@ Window {
     property var cursorPosition: Qt.point(0, 0)
     property real fixedFrameTime: 1000.0 / 60.0
     property real runTime: fixedFrameTime
-    property real showRunTime: fixedFrameTime
     property var selectedCamera: "Overview Camera"
     property real lastTime: 0
     // Count successful UDP sends against wall-clock time, independently of render FPS.
@@ -52,6 +51,11 @@ Window {
             window.visionRateSampleTime = now;
         }
     }
+    FrameAnimation {
+        id: renderedFrameRate
+        running: true
+        property real fps: smoothFrameTime > 0 ? 1.0 / smoothFrameTime : 0
+    }
 
     Item {
         width: parent.width
@@ -62,7 +66,10 @@ Window {
             id: physicsWorld
             scene: viewport.scene
             maximumTimestep: fixedFrameTime
-            minimumTimestep: fixedFrameTime
+            // Leave scheduling margin below the 60 Hz target so small frame-time
+            // jitter does not skip a physics update. The actual step is propagated
+            // through the game and vision pipeline in onFrameDone.
+            minimumTimestep: 14.0
             enableCCD: observer.ccdMode
             gravity: Qt.vector3d(0, -observer.gravity*1000.0, 0)
             typicalLength: 100
@@ -70,8 +77,8 @@ Window {
             numThreads: observer.numThreads
             forceDebugDraw: observer.forceDebugDrawMode
             onFrameDone: (timestep) => {
-                game_objects.updateGameObjects(fixedFrameTime);
-                game_objects.syncGameObjects(fixedFrameTime);
+                game_objects.updateGameObjects(timestep);
+                game_objects.syncGameObjects(timestep);
             }
         }
         Timer {
@@ -228,7 +235,7 @@ Window {
                     font.pixelSize: 15
                     color: "white"
                     horizontalAlignment: Text.AlignLeft
-                    text: "FPS: " +  Math.round(1000.0 / showRunTime)
+                    text: "FPS: " + Math.round(renderedFrameRate.fps)
                     opacity: 0.7
                 }
                 Text {
@@ -537,7 +544,6 @@ onWheel: (wheel) => {
                 emptyObjects1.syncEmptyObjects(runTime);
                 emptyObjects2.syncEmptyObjects(runTime);
             }
-            showRunTime = runTime;
         }
         function onVisionPacketSent() {
             window.visionFramesInRateWindow += 1;

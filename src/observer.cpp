@@ -352,20 +352,25 @@ void Observer::updateObjects(
     QList<bool> bBotBallContacts, 
     QList<bool> yBotBallContacts,
     QVector3D ball_position,
-    bool isFoundBall
+    bool isFoundBall,
+    float timestepMs
 ) {
     bluePositions = blue_positions.mid(0, blueRobotCount);
     yellowPositions = yellow_positions.mid(0, yellowRobotCount);
 
     // updateObjects() runs once per PHYSICS frame (syncGameObjects <-
-    // PhysicsWorld::onFrameDone), each advancing exactly 1/60 s of simulation.
-    // Everything time-based below therefore uses the fixed simulation step, and
+    // PhysicsWorld::onFrameDone). Qt reports the actual simulation step in ms;
+    // use it here in seconds for the robot model and synthetic sensor feedback.
+    // Everything time-based below therefore uses the same simulation step, and
     // vision is emitted from here — one packet per physics frame — instead of a
     // wall-clock QTimer. With the old 60 Hz wall timer the vision rate and physics
     // rate diverged whenever the render loop ran off 60 fps (headless/offscreen:
     // ~50 fps → ~17% duplicate-pose frames + all speeds scaled by the ratio;
     // occluded window: physics frozen while vision streamed the stale world).
-    const float simDtSec = 1.0f / 60.0f;
+    const float safeTimestepMs = std::isfinite(timestepMs) && timestepMs > 0.0f
+                                     ? timestepMs
+                                     : 1000.0f / 60.0f;
+    const float simDtSec = safeTimestepMs / 1000.0f;
 
     // Advance the actuation delay model before QML reads applied velocities next
     // frame (first-order lag + dead time are simulation dynamics — sim time).
@@ -394,7 +399,7 @@ void Observer::updateObjects(
     emit sendBotBallContacts(bBotBallContacts, yBotBallContacts, blueBallCameraExists, yellowBallCameraExists, blueBallPixels, yellowBallPixels);
 
     emit updateSimulationSignal();
-    sender->send(1, ballPosition, bluePositions, yellowPositions);
+    sender->send(1, ballPosition, bluePositions, yellowPositions, simDtSec);
 }
 
 // RAVEN の指令・同定モデルの出力・実際の機体速度を 1 行に並べて書く。
