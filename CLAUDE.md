@@ -22,7 +22,7 @@ C++ 約 1,980 行 / QML 約 3,550 行。**行数でも責務でも QML 側が主
 
 | パス | 役割 |
 |---|---|
-| `src/observer.*` | 中枢。設定・通信結線・60Hz タイマ・エンコーダ合成 |
+| `src/observer.*` | 中枢。設定・通信結線・物理刻み連携・エンコーダ合成 |
 | `src/networks/` | UDP 受信 3 クラス・送信 2 クラス |
 | `src/models/` | Robot の状態と遅延モデル、座標投影 |
 | `src/qml/sim/` | **シミュレーション本体**（物理・キック・摩擦） |
@@ -30,7 +30,9 @@ C++ 約 1,980 行 / QML 約 3,550 行。**行数でも責務でも QML 側が主
 | `src/qml/viz/` | 2D ミニマップ |
 
 - **物理演算は C++ ではなく QML 側にある**（`src/qml/sim/GameObjects.qml`）。
-  C++ は I/O と設定に徹している。
+  C++ は I/O と設定、それに**ロボットの運動モデル**（`src/models/robot.cpp` の
+  `advanceActuation`）に徹している。指令から機体速度までの実機同定モデルだけは
+  C++ 側で、QML はその結果を剛体に渡すだけ。
 - C++ と QML の境界は 2 本だけ。下りは `Q_PROPERTY` とシグナル、
   上りは `observer.updateObjects()`（`src/qml/sim/Sync.qml`）。
 - アプリの起動の引き金は `src/qml/Main.qml:141` の `Observer { }`。
@@ -54,5 +56,7 @@ C++ 約 1,980 行 / QML 約 3,550 行。**行数でも責務でも QML 側が主
 
 - 既知の不具合: `ai/findings/`（1 件 = 1 ファイル）
 - 操作方法: `docs/key_mouse.md`
+- 実機同定モデル（台の運動・球の減速）: `docs/robot_motion_model.md`
 - エンコーダフィードバック: `docs/encoder_feedback.md`
+- Vision の更新周期・計測結果: `docs/vision-update-rate.md`
 - 3D モデルの導入: `docs/import_model.md`

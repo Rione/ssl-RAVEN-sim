@@ -149,12 +149,12 @@ Item {
                             text = observer.gravity.toFixed(2).toString();
                         } else if (model.name === "Ball Static Friction") {
                             text = observer.ballStaticFriction.toFixed(2).toString();
-                        } else if (model.name === "Ball Dynamic Friction") {
-                            text = observer.ballDynamicFriction.toFixed(2).toString();
+                        } else if (model.name === "Ball Slide Decel") {
+                            text = observer.ballSlideDecelMmS2.toFixed(2).toString();
                         } else if (model.name === "Ball Restitution") {
                             text = observer.ballRestitution.toFixed(2).toString();
-                        } else if (model.name === "Rolling Friction") {
-                            text = observer.rollingFriction.toFixed(2).toString();
+                        } else if (model.name === "Ball Roll Decel") {
+                            text = observer.ballRollDecelMmS2.toFixed(2).toString();
                         } else if (model.name === "Kicker Friction") {
                             text = observer.kickerFriction.toFixed(2).toString();
                         }
@@ -179,12 +179,12 @@ Item {
                                 tempGravity = newValue.toFixed(2);
                             } else if (model.name === "Ball Static Friction") {
                                 tempBallStaticFriction = newValue.toFixed(2);
-                            } else if (model.name === "Ball Dynamic Friction") {
-                                tempBallDynamicFriction = newValue.toFixed(2);
+                            } else if (model.name === "Ball Slide Decel") {
+                                tempBallSlideDecel = newValue.toFixed(2);
                             } else if (model.name === "Ball Restitution") {
                                 tempBallRestitution = newValue.toFixed(2);
-                            } else if (model.name === "Rolling Friction") {
-                                tempRollingFriction = newValue.toFixed(2);
+                            } else if (model.name === "Ball Roll Decel") {
+                                tempBallRollDecel = newValue.toFixed(2);
                             } else if (model.name === "Kicker Friction") {
                                 tempKickerFriction = newValue.toFixed(2);
                             }
@@ -227,15 +227,15 @@ Item {
                             } else if (model.name === "Ball Static Friction") {
                                 tempBallStaticFriction = value.toFixed(2);
                                 model.value = tempBallStaticFriction;
-                            } else if (model.name === "Ball Dynamic Friction") {
-                                tempBallDynamicFriction = value.toFixed(2);
-                                model.value = tempBallDynamicFriction;
+                            } else if (model.name === "Ball Slide Decel") {
+                                tempBallSlideDecel = value.toFixed(2);
+                                model.value = tempBallSlideDecel;
                             } else if (model.name === "Ball Restitution") {
                                 tempBallRestitution = value.toFixed(2);
                                 model.value = tempBallRestitution;
-                            } else if (model.name === "Rolling Friction") {
-                                tempRollingFriction = value.toFixed(2);
-                                model.value = tempRollingFriction;
+                            } else if (model.name === "Ball Roll Decel") {
+                                tempBallRollDecel = value.toFixed(2);
+                                model.value = tempBallRollDecel;
                             } else if (model.name === "Kicker Friction") {
                                 tempKickerFriction = value.toFixed(2);
                                 model.value = tempKickerFriction;
@@ -267,15 +267,15 @@ Item {
                         } else if (model.name === "Ball Static Friction") {
                             value = observer.ballStaticFriction;
                             tempBallStaticFriction = value.toFixed(2);
-                        } else if (model.name === "Ball Dynamic Friction") {
-                            value = observer.ballDynamicFriction;
-                            tempBallDynamicFriction = value.toFixed(2);
+                        } else if (model.name === "Ball Slide Decel") {
+                            value = observer.ballSlideDecelMmS2;
+                            tempBallSlideDecel = value.toFixed(2);
                         } else if (model.name === "Ball Restitution") {
                             value = observer.ballRestitution;
                             tempBallRestitution = value.toFixed(2);
-                        } else if (model.name === "Rolling Friction") {
-                            value = observer.rollingFriction;
-                            tempRollingFriction = value.toFixed(2);
+                        } else if (model.name === "Ball Roll Decel") {
+                            value = observer.ballRollDecelMmS2;
+                            tempBallRollDecel = value.toFixed(2);
                         } else if (model.name === "Kicker Friction") {
                             value = observer.kickerFriction;
                             tempKickerFriction = value.toFixed(2);

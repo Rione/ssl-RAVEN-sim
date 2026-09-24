@@ -9,12 +9,14 @@
 #include <QTimer>
 #include <QElapsedTimer>
 
+#include <fstream>
 #include <random>
 
 #include "networks/receiver.h"
 #include "networks/sender.h"
 #include "networks/feedbackSender.h"
 #include "models/robot.h"
+#include "models/robotModel.h"
 #include "mocSim_Packet.pb.h"
 #include "ssl_simulation_robot_control.pb.h"
 
@@ -37,10 +39,6 @@ class Observer : public QObject {
     Q_PROPERTY(int blueRobotCount READ getBlueRobotCount WRITE setBlueRobotCount NOTIFY settingChanged)
     Q_PROPERTY(int yellowRobotCount READ getYellowRobotCount WRITE setYellowRobotCount NOTIFY settingChanged)
     Q_PROPERTY(float ballRestitution READ getBallRestitution WRITE setBallRestitution NOTIFY settingChanged)
-    // Kinetic (dynamic) friction coefficient used by the ball's slip-phase friction.
-    Q_PROPERTY(float ballDynamicFriction READ getBallDynamicFriction WRITE setBallDynamicFriction NOTIFY settingChanged)
-    // Rolling resistance coefficient used by the ball's rolling-phase friction.
-    Q_PROPERTY(float rollingFriction READ getRollingFriction WRITE setRollingFriction NOTIFY settingChanged)
     Q_PROPERTY(float kickerFriction READ getKickerFriction WRITE setKickerFriction NOTIFY settingChanged)
     Q_PROPERTY(float gravity READ getGravity WRITE setGravity NOTIFY settingChanged)
     Q_PROPERTY(int desiredFps READ getDesiredFps WRITE setDesiredFps NOTIFY settingChanged)
@@ -52,6 +50,18 @@ class Observer : public QObject {
     // center-origin conversion done for PiToMw.
     Q_PROPERTY(int onboardCameraWidth READ getOnboardCameraWidth CONSTANT)
     Q_PROPERTY(int onboardCameraHeight READ getOnboardCameraHeight CONSTANT)
+    // 実機同定モデル ([RobotModel]) が有効か。有効なら QML は Robot が出す
+    // 適用速度をそのまま台に与える (MotionControl の等方な加減速制限は通さない)。
+    Q_PROPERTY(bool robotModelEnabled READ getRobotModelEnabled CONSTANT)
+    // RAVEN のボールモデル (BallSpeedModel / system_model の ball_model) と同じ 3 つ。
+    // 係数 (μ) ではなく mm/s^2 の減速度そのものなので、RAVEN の到達時刻・到達速度の
+    // 予測と sim の実際が一致する。
+    Q_PROPERTY(float ballSlideDecelMmS2 READ getBallSlideDecelMmS2 WRITE setBallSlideDecelMmS2 NOTIFY settingChanged)
+    Q_PROPERTY(float ballRollDecelMmS2 READ getBallRollDecelMmS2 WRITE setBallRollDecelMmS2 NOTIFY settingChanged)
+    Q_PROPERTY(float ballSwitchRatio READ getBallSwitchRatio CONSTANT)
+    // ロボットに当たったときの跳ね返り (ball_model.direct_kick)。
+    Q_PROPERTY(float ballNormalRestitution READ getBallNormalRestitution CONSTANT)
+    Q_PROPERTY(float ballTangentRetention READ getBallTangentRetention CONSTANT)
 
 public:
     static constexpr int MaxRobots = 16;
@@ -67,7 +77,8 @@ public:
         QList<bool> bBotBallContacts, 
         QList<bool> yBotBallContacts, 
         QVector3D ball_position,
-        bool isFoundBall
+        bool isFoundBall,
+        float timestepMs
     );
 
     void start(quint16 port);
@@ -105,8 +116,6 @@ public:
     int getBlueRobotCount() const { return blueRobotCount; }
     int getYellowRobotCount() const { return yellowRobotCount; }
     float getBallRestitution() const { return ballRestitution; }
-    float getBallDynamicFriction() const { return ballDynamicFriction; }
-    float getRollingFriction() const { return rollingFriction; }
     float getKickerFriction() const { return kickerFriction; }
     float getGravity() const { return gravity; }
     int getDesiredFps() const { return desiredFps; }
@@ -115,6 +124,12 @@ public:
     bool getHideBallMode() const { return hideBallMode; }
     int getOnboardCameraWidth() const { return onboardCameraWidth; }
     int getOnboardCameraHeight() const { return onboardCameraHeight; }
+    bool getRobotModelEnabled() const { return robotModelEnabled; }
+    float getBallSlideDecelMmS2() const { return ballSlideDecelMmS2; }
+    float getBallRollDecelMmS2() const { return ballRollDecelMmS2; }
+    float getBallSwitchRatio() const { return ballSwitchRatio; }
+    float getBallNormalRestitution() const { return ballNormalRestitution; }
+    float getBallTangentRetention() const { return ballTangentRetention; }
 
     void setWindowWidth(int width);
     void setWindowHeight(int height);
@@ -131,15 +146,14 @@ public:
     void setBlueRobotCount(int count);
     void setYellowRobotCount(int count);
     void setBallRestitution(float restitution);
-    void setBallDynamicFriction(float friction);
-    void setRollingFriction(float friction);
+    void setBallSlideDecelMmS2(float decel);
+    void setBallRollDecelMmS2(float decel);
     void setKickerFriction(float friction);
     void setGravity(float gravity);
     void setDesiredFps(int fps);
     void setCcdMode(bool mode);
     void setNumThreads(int threads);
     void setHideBallMode(bool mode);
-    void updateSimulator();
     
 signals:
     void blueRobotsChanged();
@@ -155,12 +169,18 @@ signals:
     );
     void updateSenderData(QVector3D ball, QList<QVector3D> blue, QList<QVector3D> yellow);
     void updateSimulationSignal();
+    void visionPacketSent();
+    // 1 物理フレームぶん同定モデルを進めたあと。QML はこれを受けて各台の適用速度を
+    // 読み直す。blueRobotsChanged と違って kick/dribble の指令は触らないので、
+    // 毎フレーム鳴らしてもキックを取りこぼしたり二度撃ちしたりしない。
+    void actuationAdvanced();
     void robotReplacementRequested(int id, bool isYellow, float sceneX, float sceneZ, float sceneRotYDeg);
-    void ballReplacementRequested(float sceneX, float sceneZ);
+    // hasVelocity is false when the Replacement didn't set vx/vy (they are optional
+    // in mocSim_BallReplacement); sceneVx/sceneVz are only meaningful when true.
+    void ballReplacementRequested(float sceneX, float sceneZ, bool hasVelocity, float sceneVx, float sceneVz);
 
 private:
     QSettings config;
-    QTimer* simTimer = nullptr;
 
     VisionReceiver *visionReceiver;
     ControlBlueReceiver *controlBlueReceiver;
@@ -191,9 +211,7 @@ private:
     int yellowRobotCount;
 
     float ballStaticFriction;
-    float ballDynamicFriction;
     float ballRestitution;
-    float rollingFriction;
     float kickerFriction;
     float gravity;
     int desiredFps;
@@ -222,8 +240,6 @@ private:
                              float dtSec);
 
     FeedbackSender *feedbackSender = nullptr;
-    QElapsedTimer actuationClock;   // dt for the actuation delay model
-    QElapsedTimer feedbackClock;    // dt for encoder velocity differentiation
     QList<QVector3D> prevEncoderPositions;
 
     bool encoderEnabled = false;
@@ -236,10 +252,25 @@ private:
     double encoderQuantMps = 0.0;
     std::mt19937 encoderRng{12345u};
 
-    float actTauLinearSec = 0.0f;
-    float actTauAngularSec = 0.0f;
-    float actDeadTimeLinearSec = 0.0f;
-    float actDeadTimeAngularSec = 0.0f;
+    // 実機同定モデル。config_v2.ini の [RobotModel] を既定、[RobotModel.<id>] を
+    // 各 ID の差分として読む。青黄ともに同じ ID には同じ台を割り当てる。
+    bool robotModelEnabled = true;
+    void loadRobotModels();
+
+    // --- 追従診断 ([Diag] RobotCsvPath) ---
+    // 1 物理フレーム 1 行で「RAVEN の指令 → 同定モデルの出力 → 実際の機体速度」を並べる。
+    // 3 つが揃っているかどうかが、RAVEN の速度指令に sim が追従できているかそのもの。
+    std::ofstream diagCsv;
+    bool diagEnabled = false;
+    int diagRobotId = -1;   // -1 = RAVEN が操作するチームの全機体
+    double diagTimeSec = 0.0;
+    void writeRobotDiag(const QList<QVector3D> &positions, float dtSec);
+
+    float ballSlideDecelMmS2 = 0.0f;
+    float ballRollDecelMmS2 = 0.0f;
+    float ballSwitchRatio = 2.0f / 3.0f;
+    float ballNormalRestitution = 0.8f;
+    float ballTangentRetention = 1.0f;
 };
 
 #endif // OBSERVER_H

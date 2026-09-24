@@ -2,6 +2,7 @@
 .DS_Store
 /config/config.ini
 /build/
-/assets/*
-!/assets/.gitkeep
 proto/pb_gen/*
+
+# git worktree (Claude の作業用)
+.claude/worktrees/

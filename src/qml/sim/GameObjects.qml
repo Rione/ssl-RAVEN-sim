@@ -33,7 +33,24 @@ Node {
     property real grabOffsetZ: 0
     property real grabLiftHeight: 80
 
-    property var kickFlag: false
+    // Per-robot kicker recharge, in physics frames (1 s at 60 Hz). A kick used to raise ONE global flag that
+    // blocked every robot's kick AND dribbling for 1 s: with an opponent that kicks often, the other team could
+    // hardly ever kick or hold the ball. The kicker capacitor is per robot, and the dribbler is independent of it.
+    property int kickRechargeFrames: 60
+    property var kickCooldown: ({})
+    // A dribbler cannot catch a ball that passes it faster than this (mm/s, relative to the robot). Without
+    // this limit a robot that kicks with its dribbler running re-catches the ball in the launch frame and the
+    // kick is swallowed (the ball is 95 mm in front of it and still inside the hold cone).
+    property real dribbleCatchMaxSpeedMmS: 1500
+    // Who may act on the ball this frame ({isYellow, id} or null). The ball can sit in several mouth cones at once
+    // (a face-to-face contest): a robot asking to kick wins (a kick is instantaneous), otherwise the nearest mouth.
+    // If the winner is not the current holder, the hold is released so the winner can dribble or kick the ball.
+    // Before, whoever registered the dribble first kept the ball for good and the other robot's kicks were
+    // silently refused although its sensor reported "holding".
+    property var ballContestWinner: null
+    // A challenger that only dribbles must be this much closer to the ball than the current holder to take it
+    // (mm). Without it two facing dribblers swap the ball every frame.
+    property real contestTakeoverMarginMm: 30
     property var pendingKickVelocity: null
     property var preBallPosition: Qt.vector4d(0, 0, 0, 0)
     property var ballAngularVelocity: Qt.vector4d(0, 0, 0, 0)
@@ -41,7 +58,14 @@ Node {
     property var ballVelocity: Qt.vector4d(0, 0, 0, 0)
     property var ballModelNum: 1
     property var ballReset: false
+    // 配置の直後、減速を止めておくフレーム数。ballVelocity は位置の差分なので、
+    // 瞬間移動をまたいだ 1 フレームは出鱈目な速さになる。それを摩擦に食わせないための
+    // 逃げで、必要なのは差分が綺麗になるまでの 2 フレームだけ。
+    // 以前は 30 (= 0.5 s) で、速度つきの配置 (RAVEN のフリーキック・ボール配置) のあいだ
+    // 球が完全に無摩擦で転がっていた。0918 実測: 3000 mm/s で置くと 0.45 s / 1350 mm を
+    // 一切減速せずに直進し、RAVEN の到達予測がそのぶん丸ごと外れていた。
     property int skipRollingFrictionFrames: 0
+    readonly property int placementSettleFrames: 2
     // Ball physical constants (scene units are mm). 42 mm diameter, ~46 g golf ball.
     // Mass is in kg, the same unit as the robot bodies (2.5 kg): 46 g is 0.046, not 46.
     property real ballRadius: 21.0
@@ -50,6 +74,13 @@ Node {
     // a readable angular velocity, and the field has no contact friction, so the slip/roll
     // friction model owns the ball's spin. See applyBallFriction().
     property var ballSpin: Qt.vector3d(0, 0, 0)
+    // Tracked velocity of the previous frame (m/s, scene axes), for impact detection in applyBallFriction().
+    property var prevBallVelocity: Qt.vector3d(0, 0, 0)
+    // 直近の「蹴り出しの速さ」v0 [mm/s] と、もう転がりに入ったか。RAVEN のボールモデルは
+    // 滑走 → 転がりの切り替えを v0 の割合 (k_switch) で決めるので、v0 を覚えておく必要がある。
+    // キック・配置・衝突・外から押されたとき、のいずれでも数え直す。
+    property real ballLaunchSpeed: 0.0
+    property bool ballRolling: true
     property var ballPositions: new Array(ballModelNum).fill(Qt.vector4d(0, 0, 0, 0))
     MotionControl {
         id: motionControl
@@ -69,6 +100,20 @@ Node {
                 blue.spinners[i] = observer.blue_robots[i].spinner;
             }
         }
+        // Robot::advanceActuation が 1 tick 進むたび。むだ時間と一次遅れの立ち上がりを
+        // 取りこぼさないよう、速度だけを毎フレーム読み直す (kick/dribble には触らない)。
+        function onActuationAdvanced() {
+            for (var i = 0; i < blue.num; i++) {
+                blue.velNormals[i] = observer.blue_robots[i].velnormal;
+                blue.velTangents[i] = observer.blue_robots[i].veltangent;
+                blue.velAngulars[i] = observer.blue_robots[i].velangular;
+            }
+            for (var j = 0; j < yellow.num; j++) {
+                yellow.velNormals[j] = observer.yellow_robots[j].velnormal;
+                yellow.velTangents[j] = observer.yellow_robots[j].veltangent;
+                yellow.velAngulars[j] = observer.yellow_robots[j].velangular;
+            }
+        }
         function onYellowRobotsChanged() {
             for (var i = 0; i < yellow.num; i++) {
                 yellow.velNormals[i] = observer.yellow_robots[i].velnormal;
@@ -79,10 +124,34 @@ Node {
             }
         }
         function onRobotReplacementRequested(id, isYellow, sceneX, sceneZ, sceneRotYDeg) {
-            (isYellow ? yBotsFrame : bBotsFrame).children[id].reset(Qt.vector3d(sceneX, 0, sceneZ), Qt.vector3d(0, sceneRotYDeg, 0));
+            // reset() (not just assigning position/eulerRotation) is required to actually
+            // warp a DynamicRigidBody's physics pose: for a dynamic body, physics owns the
+            // transform, so plain property assignment wouldn't move the PhysX actor. This
+            // also zeroes the body's linear/angular velocity. The observer has already
+            // stopped any latched velocity command for this robot (Robot::resetMotion(),
+            // called before this signal), so it stays put instead of immediately driving
+            // off again on the next tick.
+            let color = isYellow ? yellow : blue;
+            let frame = (isYellow ? yBotsFrame : bBotsFrame).children[id];
+            // m2 は config の robotCount 分しか Repeater3D を生まない。mirror-kickoff が
+            // 退避用に id 11..15 を送ると children[id] が undefined → TypeError だった。
+            if (!frame || typeof frame.reset !== "function") {
+                return;
+            }
+            frame.reset(Qt.vector3d(sceneX, 0, sceneZ), Qt.vector3d(0, sceneRotYDeg, 0));
+            // botMovement() derives the robot's "current velocity" from the pose delta
+            // across one tick (poses[i] vs. prePoses[i]). Left untouched, prePoses[i]
+            // still holds the pre-teleport pose, so the position jump reads as a huge
+            // one-tick velocity and MotionControl's accel-limiter spends a few frames
+            // coasting it back down to the (now zero) commanded speed instead of the
+            // robot being still immediately. Seeding prePoses/preVelocities to the
+            // just-placed, at-rest pose avoids that phantom delta.
+            let headingRad = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
+            color.prePoses[id] = Qt.vector4d(frame.position.x, frame.position.y, frame.position.z, headingRad);
+            color.preVelocities[id] = Qt.vector4d(0, 0, 0, 0);
         }
-        function onBallReplacementRequested(sceneX, sceneZ) {
-            ball.reset(Qt.vector3d(sceneX, 21, sceneZ), Qt.vector3d(0, 0, 0));
+        function onBallReplacementRequested(sceneX, sceneZ, hasVelocity, sceneVx, sceneVz) {
+            placeBall(Qt.vector3d(sceneX, 21, sceneZ), hasVelocity ? Qt.vector3d(sceneVx, 0, sceneVz) : null);
         }
     }
 
@@ -96,6 +165,7 @@ Node {
             inertiaTensor: Qt.vector3d(5000, 5000, 5000)
             linearAxisLock: DynamicRigidBody.LockY
             sendContactReports: true
+            physicsMaterial: botMaterial
             position: Qt.vector4d(blue.poses[index].x, 0, blue.poses[index].z, blue.poses[index].w)
             collisionShapes: [
                 ConvexMeshShape {
@@ -224,6 +294,7 @@ Node {
             inertiaTensor: Qt.vector3d(5000, 5000, 5000)
             linearAxisLock: DynamicRigidBody.LockY
             sendContactReports: true
+            physicsMaterial: botMaterial
             position: Qt.vector4d(yellow.poses[index].x, 0, yellow.poses[index].z, yellow.poses[index].w)
             collisionShapes: [
                 ConvexMeshShape {
@@ -346,7 +417,27 @@ Node {
 
     PhysicsMaterial {
         id: ballMaterial
+        // 接地の摩擦は 0。地面との接線力は applyBallFriction() が丸ごと持っているので、
+        // PhysX 側にも摩擦があると滑走相が二重に減速する (PhysX は 2 つの材質を平均するため、
+        // 既定の 0.5 のままだと地面接触に μ = 0.25 が上乗せされていた)。
+        staticFriction: 0.0
+        dynamicFriction: 0.0
+        // 壁・ゴール枠との跳ね返り。ロボットとの跳ね返りは botMaterial 側で決める。
         restitution: observer.ballRestitution
+    }
+
+    // ロボットの外装。RAVEN の ball_model.direct_kick を再現するための材質。
+    //   tangent_retention = 1.0 … 接線方向は落ちない → 摩擦 0
+    //   normal_restitution    … 法線方向の反発。PhysX は接触する 2 つの材質の平均を取るので、
+    //                           球もロボットも同じ値を持たせて平均を normal_restitution にする。
+    // 以前は ball 側を壁向けの値 (0.6) のままにして、その平均が 0.8 になる値をここに入れて
+    // いた。式としては合うが、ロボット同士の反発が 1.0 (完全弾性) になる副作用があった。
+    // 壁の跳ね返りは Field.qml の wallMaterial 側で調整する。
+    PhysicsMaterial {
+        id: botMaterial
+        staticFriction: 0.0
+        dynamicFriction: 0.0
+        restitution: observer.ballNormalRestitution
     }
 
     DynamicRigidBody {
@@ -388,6 +479,65 @@ Node {
         scale: Qt.vector3d(0.8, 0.01, 0.8)
     }
 
+    // Scene position of the ball: the physics body, or the holder's mouth while it is held (the body is parked).
+    function heldBallScenePosition() {
+        if (dribbleInfo.id == -1) {
+            return Qt.vector3d(ballPosition.x, ballPosition.y, ballPosition.z);
+        }
+        let frame = (dribbleInfo.isYellow ? yBotsFrame : bBotsFrame).children[dribbleInfo.id];
+        let w = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
+        return Qt.vector3d(frame.position.x + 95 * Math.cos(-w), 25, frame.position.z + 95 * Math.sin(-w));
+    }
+
+    function resolveBallContest() {
+        let bp = heldBallScenePosition();
+        let best = null;
+        let bestKick = false;
+        let bestDist = 1e9;
+        for (let team = 0; team < 2; team++) {
+            let isYellow = team == 1;
+            let color = isYellow ? yellow : blue;
+            let frames = isYellow ? yBotsFrame : bBotsFrame;
+            for (let i = 0; i < color.num; i++) {
+                let frame = frames.children[i];
+                if (!frame) {
+                    continue;
+                }
+                let w = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
+                let d = Math.hypot(frame.position.x - bp.x, frame.position.z - bp.z);
+                let rad = mu.normalizeRadian(Math.atan2(frame.position.z - bp.z, frame.position.x - bp.x) - Math.PI + w);
+                let inCone = d < 110 * Math.cos(Math.abs(rad)) && Math.abs(rad) < Math.PI / 15.0 && bp.y < 40;
+                if (!inCone) {
+                    continue;
+                }
+                let key = (isYellow ? "y" : "b") + i;
+                let recharged = !(key in kickCooldown) || kickCooldown[key] <= 0;
+                let wantsKick = recharged && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0);
+                if (!wantsKick && !(color.spinners[i] > 0 && recharged)) {
+                    continue;   // a robot that has just kicked neither kicks nor catches until it recharges
+                }
+                let isHolder = dribbleInfo.id == i && dribbleInfo.isYellow == isYellow;
+                let effective = isHolder ? d - contestTakeoverMarginMm : d;   // the holder keeps a small edge
+                if (best === null || (wantsKick && !bestKick) || (wantsKick == bestKick && effective < bestDist)) {
+                    best = { isYellow: isYellow, id: i };
+                    bestKick = wantsKick;
+                    bestDist = effective;
+                }
+            }
+        }
+        ballContestWinner = best;
+        if (dribbleInfo.id != -1 && best !== null && (best.id != dribbleInfo.id || best.isYellow != dribbleInfo.isYellow)) {
+            // The holder loses the ball: the body goes back to the mouth as a free ball for this frame's botMovement.
+            let holderColor = dribbleInfo.isYellow ? yellow : blue;
+            let holderFrame = (dribbleInfo.isYellow ? yBotsFrame : bBotsFrame).children[dribbleInfo.id];
+            holderFrame.collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+            holderColor.holds[dribbleInfo.id] = false;
+            ball.reset(bp, Qt.vector3d(0, 0, 0));
+            ballPosition = Qt.vector4d(bp.x, bp.y, bp.z, 0);
+            dribbleInfo.id = -1;
+        }
+    }
+
     function botMovement(color, timestep, isYellow=false) {
         let botFrame = isYellow ? yBotsFrame : bBotsFrame;
 
@@ -397,7 +547,14 @@ Node {
             color.poses[i] = Qt.vector4d(frame.position.x, frame.position.y, frame.position.z, mu.normalizeRadian((frame.eulerRotation.y+90) * Math.PI / 180.0));
 
             color.velocities[i] = mu.calcVelocity(color.poses[i], color.prePoses[i], timestep);
-            let newVelocity = motionControl.calcSpeed(Qt.vector3d(color.velTangents[i], color.velNormals[i], color.velAngulars[i]), color.velocities[i], color.preVelocities[i], timestep, color.poses[i].w);
+            // velTangents/velNormals/velAngulars は Robot::advanceActuation が実機の同定モデル
+            // (むだ時間・一次遅れ・定常ゲイン・軸別の牽引限界・車輪周速の予算) を通したあとの
+            // 「実際に出る速度」。MotionControl の等方な加減速制限を上から重ねると、軸ごとに
+            // 2 倍以上違う牽引限界も 1 未満の定常ゲインも潰れて実機と別物になるので通さない。
+            // [RobotModel] Enabled=false のときだけ従来の経路に戻る。
+            let newVelocity = observer.robotModelEnabled
+                ? Qt.vector3d(color.velTangents[i], color.velNormals[i], color.velAngulars[i])
+                : motionControl.calcSpeed(Qt.vector3d(color.velTangents[i], color.velNormals[i], color.velAngulars[i]), color.velocities[i], color.preVelocities[i], timestep, color.poses[i].w);
 
             color.prePoses[i] = color.poses[i];
             color.preVelocities[i] = Qt.vector4d(newVelocity.x, newVelocity.y, newVelocity.z, newVelocity.w);
@@ -407,6 +564,13 @@ Node {
 
             let botDistanceBall = Math.sqrt(Math.pow(frame.position.x - ballPosition.x, 2) + Math.pow(frame.position.z - ballPosition.z, 2));
             let botRadianBall = mu.normalizeRadian(Math.atan2(frame.position.z - ballPosition.z, frame.position.x - ballPosition.x) - Math.PI + color.poses[i].w);
+            // A robot that switched its dribbler off lets go of the ball. The holder's mouth test below is forced to
+            // pass, so without this the release branch can never run and the ball is carried for ever (the only way
+            // out was a kick). Keep holding while it asks to kick: the kick needs the ball in the mouth.
+            let asksKickNow = color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0;
+            if (!(color.spinners[i] > 0) && !asksKickNow) {
+                control.release(frame, isYellow, i, color);
+            }
             if (dribbleInfo.id != -1) {
                 if (isYellow == dribbleInfo.isYellow && i == dribbleInfo.id) {
                     botDistanceBall = 95;
@@ -414,13 +578,39 @@ Node {
                 }
             }
             if (botDistanceBall < 110 * Math.cos(Math.abs(botRadianBall)) && Math.abs(botRadianBall) < Math.PI/15.0 && ballPosition.y < 40) {
+                let kickKey = (isYellow ? "y" : "b") + i;
+                let asksKick = color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0;
+                if (ballContestWinner !== null && (ballContestWinner.id != i || ballContestWinner.isYellow != isYellow)) {
+                    kickDiag(kickKey, asksKick, "contest winner is " + (ballContestWinner.isYellow ? "y" : "b") + ballContestWinner.id);
+                    // The other robot has the ball: our mouth sensor must read empty. Leaving holds[i] stale kept RAVEN's
+                    // "touching" true and it fired into nothing for 0.5 s at a time (m33: 146 kick frames, 6 launches).
+                    color.holds[i] = false;
+                    continue;   // another robot has the ball this frame (resolveBallContest)
+                }
                 if (dribbleInfo.id != -1 && (dribbleInfo.id != i || isYellow != dribbleInfo.isYellow)) {
+                    kickDiag(kickKey, asksKick, "held by " + (dribbleInfo.isYellow ? "y" : "b") + dribbleInfo.id);
+                    color.holds[i] = false;
                     continue;
                 }
                 color.holds[i] = true;
-                if (!kickFlag && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0)) {
+                let recharged = !(kickKey in kickCooldown) || kickCooldown[kickKey] <= 0;
+                if (asksKick && !recharged) {
+                    kickDiag(kickKey, true, "not recharged (" + kickCooldown[kickKey] + " frames left)");
+                }
+                let relVx = (ballVelocity.x - color.velocities[i].x) * 1000.0;   // m/s -> mm/s
+                let relVz = (ballVelocity.z - color.velocities[i].z) * 1000.0;
+                let catchable = Math.hypot(relVx, relVz) < dribbleCatchMaxSpeedMmS
+                        || (dribbleInfo.id == i && dribbleInfo.isYellow == isYellow);   // already held: keep it
+                if (recharged && asksKick) {
+                    kickCooldown[kickKey] = kickRechargeFrames;
+                    // wall-clock ms so the line can be matched to RAVEN's MCAP (log_time) without guessing from positions
+                    console.log("[kick] " + kickKey + " fires " + Math.round(color.kickspeeds[i].x) + "/" + Math.round(color.kickspeeds[i].y) + " mm/s at ball ("
+                            + Math.round(ballPosition.x) + ", " + Math.round(ballPosition.z) + ") t=" + Date.now());
                     control.kick(color, frame, i, color.poses[i].w, ballVelocity);
-                } else if (color.spinners[i] > 0 && !kickFlag) {
+                } else if (color.spinners[i] > 0 && catchable && recharged) {
+                    // recharged: a robot that has just kicked does not re-catch the ball it launched (the body's reset
+                    // lands one frame later and the mouth test passes meanwhile; the ball is gone for real).
+
                     control.dribble(frame, isYellow, i, botRadianBall, botDistanceBall, color);
                 }
             } else {
@@ -438,8 +628,28 @@ Node {
         }
     }
 
+    // Diagnostics: a robot with the ball in its mouth asked to kick but could not. Logged at most once per second per robot.
+    property var kickDiagLast: ({})
+    property int diagFrame: 0
+    function kickDiag(kickKey, asksKick, why) {
+        if (!asksKick) {
+            return;
+        }
+        let now = diagFrame;
+        if (!(kickKey in kickDiagLast) || now - kickDiagLast[kickKey] >= 60) {
+            kickDiagLast[kickKey] = now;
+            console.log("[kick] " + kickKey + " asks to kick but cannot: " + why);
+        }
+    }
+
     function updateGameObjects(timestep) 
     {
+        diagFrame++;
+        for (let key in kickCooldown) {
+            if (kickCooldown[key] > 0) {
+                kickCooldown[key]--;
+            }
+        }
         ballVelocity = mu.calcVelocity(ballPosition, preBallPosition, timestep);
         ballAngularVelocity = mu.calcVelocity(ball.eulerRotation, preBallAngularPosition, timestep);
         let teleopSpeed = Math.sqrt(teleopVelocity.x * teleopVelocity.x
@@ -455,7 +665,11 @@ Node {
                 && Math.abs(ball.position.x) < 50000
                 && Math.abs(ball.position.z) < 50000) {
             ball.setLinearVelocity(pendingKickVelocity);
-            // The ball leaves the kicker with no spin; the slip-friction phase spins it up.
+            // ここが RAVEN のモデルで言う蹴り出し: v0 を取り直して滑走からやり直す。
+            ballLaunchSpeed = Math.sqrt(pendingKickVelocity.x * pendingKickVelocity.x
+                                        + pendingKickVelocity.z * pendingKickVelocity.z);
+            ballRolling = false;
+            // The ball leaves the kicker with no spin; the slide phase spins it up.
             ballSpin = Qt.vector3d(0, 0, 0);
             ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
             pendingKickVelocity = null;
@@ -472,6 +686,7 @@ Node {
         preBallAngularPosition = ball.eulerRotation;
         ballReset = true;
         
+        resolveBallContest();
         botMovement(blue, timestep);
         botMovement(yellow, timestep, true);
 
@@ -485,32 +700,32 @@ Node {
         }
     }
 
-    // Slip/roll ball-friction model.
+    // RAVEN のボールモデル (common/physics/BallSpeedModel + system_model の ball_model) を
+    // そのまま持ち込んだ、滑走 → 転がりの 2 段「一定減速」モデル。
     //
-    // A ball launched without spin first SLIDES: kinetic (dynamic) friction acts at the
-    // contact point opposite the slip velocity, decelerating the ball AND applying a
-    // torque that spins it up. The slip shrinks until the contact point stops moving
-    // (rolling without slipping), after which only the much smaller ROLLING RESISTANCE
-    // decelerates it. The ball therefore transitions slip -> roll while slowing down.
+    //   滑走 (slide): 蹴り出しの速さ v0 から k_switch·v0 まで、一定の acc_slide で落ちる
+    //   転がり (roll): そこから先は一定の acc_roll で落ちる
     //
-    // Contact point (ball bottom, offset (0,-R,0) from the centre) velocity:
-    //   u = v + omega x (0,-R,0) = (vx + R*wz, vz - R*wx)
-    // Rolling-without-slipping means u = 0, i.e. wz = -vx/R, wx = vz/R.
-    // For a solid sphere (I = 2/5 m R^2) the slip magnitude decays at rate (7/2)*muK*g,
-    // giving the classic result that a no-spin launch reaches rolling at 5/7 of its
-    // launch speed.
+    // RAVEN はパスの初速逆算 (BallSpeedModel.initialSpeedFor)、到達時刻 (BallPhysics.arrivalTime)、
+    // 到達速度 (speedAfterTravel) をすべてこの 3 つの数から引いている。sim が「摩擦係数 × g」で
+    // 別の落ち方をしていると、RAVEN の「ここで受け取れる」が毎回外れる。だから係数ではなく
+    // mm/s^2 の減速度そのものを合わせる。値は [BallModel] (observer 経由)。
     //
-    // Parameters live in [Physics] of the config:
-    //   BallDynamicFriction (muK)  - kinetic/dynamic friction coefficient (slip phase)
-    //   RollingFriction     (cRoll) - rolling resistance coefficient (roll phase)
+    // 切り替えの基準が蹴り出しの速さ v0 なのがこのモデルの肝で、物理的な転がり条件
+    // (剛球なら 5/7·v0) とは別物。RAVEN が 2/3 で同定しているので sim もそれに従う。
+    // v0 は ballLaunchSpeed で持ち、キック・配置・衝突のたびに数え直す。
+    //
+    // 球の回転は PhysX から読み出せないので ballSpin が唯一の真値。滑走のあいだに
+    // 転がりの回転まで線形に持ち上げて、見た目も滑走 → 転がりになるようにしている。
     function applyBallFriction(ballBody, linearVelocity, timestep)
     {
-        let muK = observer.ballDynamicFriction;   // 動摩擦係数
-        let cRoll = observer.rollingFriction;     // 転がり抵抗係数
+        let aSlide = observer.ballSlideDecelMmS2;   // 滑走の減速度 [mm/s^2]
+        let aRoll = observer.ballRollDecelMmS2;     // 転がりの減速度 [mm/s^2]
+        let kSwitch = observer.ballSwitchRatio;     // v_switch = kSwitch * v0
 
         // Skip when both effects are off, on a bad dt, or while the ball is parked
         // off-field during dribbling (x ~ 100000): never disturb the park sentinel.
-        if ((muK <= 0 && cRoll <= 0) || timestep <= 0 || ballBody.position.x > 50000) {
+        if ((aSlide <= 0 && aRoll <= 0) || timestep <= 0 || ballBody.position.x > 50000) {
             return;
         }
         // A chip in the air gets no ground friction until it lands.
@@ -520,81 +735,95 @@ Node {
 
         let dt = timestep > 1.0 ? timestep / 1000.0 : timestep;   // ms -> s (fixed 1/60 s)
         let R = ballRadius;
-        let g = observer.gravity * 1000.0;   // m/s^2 -> mm/s^2, matching PhysicsWorld.gravity
 
         // calcVelocity() reports mm-per-(frame ms), which is numerically m/s; convert to
-        // the scene's mm/s so it is consistent with R (mm) and g (mm/s^2).
+        // the scene's mm/s so it is consistent with R (mm) and the decelerations (mm/s^2).
         let vx = linearVelocity.x * 1000.0;
         let vz = linearVelocity.z * 1000.0;
-        let wx = ballSpin.x;
-        let wz = ballSpin.z;
         let vx0 = vx;
         let vz0 = vz;
+        let speed0 = Math.sqrt(vx * vx + vz * vz);
 
-        let speed = Math.sqrt(vx * vx + vz * vz);
-        // Fully stop a crawling ball (there is no PhysX floor friction; friction is
+        // Impact (wall, goal, robot): the velocity direction flipped or the speed jumped between two
+        // frames. The finite-difference velocity spans the impact, so decelerating here would bend the
+        // rebound. Skip this frame's impulse and treat the rebound as a fresh launch — which is also
+        // what RAVEN's model says happens after a robot contact (direct_kick).
+        let pvx = prevBallVelocity.x * 1000.0;
+        let pvz = prevBallVelocity.z * 1000.0;
+        let prevSpeed = Math.sqrt(pvx * pvx + pvz * pvz);
+        let impact = prevSpeed > 200.0 && speed0 > 200.0
+                && (vx * pvx + vz * pvz < 0.0 || speed0 > 1.5 * prevSpeed);
+        prevBallVelocity = linearVelocity;
+        if (impact) {
+            ballLaunchSpeed = speed0;
+            ballRolling = false;
+            ballSpin = Qt.vector3d(0, ballSpin.y, 0);
+            ballBody.setAngularVelocity(ballSpin);
+            return;
+        }
+        // Fully stop a crawling ball (there is no PhysX floor friction; the deceleration is
         // modelled entirely here, so nothing else would ever bring it to rest).
-        if (speed < 20.0) {
-            if (speed > 0.0) {
+        if (speed0 < 20.0) {
+            if (speed0 > 0.0) {
                 ballBody.applyCentralImpulse(Qt.vector3d(-ballMass * vx, 0, -ballMass * vz));
             }
+            ballLaunchSpeed = 0.0;
+            ballRolling = true;
             ballSpin = Qt.vector3d(0, 0, 0);
             ballBody.setAngularVelocity(Qt.vector3d(0, 0, 0));
             return;
         }
 
-        // Slip velocity at the contact point.
-        let ux = vx + R * wz;
-        let uz = vz - R * wx;
-        let slip = Math.sqrt(ux * ux + uz * uz);
-
-        let remaining = dt;
-        const slipEps = 1.0;   // mm/s: below this the contact point is effectively rolling
-
-        if (slip > slipEps && muK > 0) {
-            // --- Slip phase (sub-stepped so we switch to rolling exactly when u -> 0). ---
-            let aK = muK * g;                 // linear deceleration magnitude
-            let slipDecayRate = 3.5 * aK;     // d|u|/dt for a solid sphere
-            let tRoll = slip / slipDecayRate; // time until rolling without slipping
-            let tSlip = Math.min(tRoll, remaining);
-
-            let nux = ux / slip;
-            let nuz = uz / slip;
-            // Linear: kinetic friction opposes the slip direction.
-            vx -= aK * tSlip * nux;
-            vz -= aK * tSlip * nuz;
-            // Angular: the same contact force spins the ball up.
-            //   dwx/dt = (5 aK)/(2R) * nuz,  dwz/dt = -(5 aK)/(2R) * nux
-            let angK = (2.5 * aK) / R;
-            wx += angK * tSlip * nuz;
-            wz -= angK * tSlip * nux;
-
-            remaining -= tSlip;
+        // 速くなったなら外から力が入った (押された・蹴られた)。衝突として拾えなかった
+        // ぶんもここで新しい蹴り出しとして数え直す。+5 は差分速度の揺れの逃げ。
+        if (speed0 > ballLaunchSpeed + 5.0) {
+            ballLaunchSpeed = speed0;
+            ballRolling = false;
         }
 
-        if (remaining > 0) {
-            // --- Roll phase: enforce the rolling constraint, then rolling resistance. ---
-            wz = -vx / R;
-            wx = vz / R;
+        let speed = speed0;
+        let remaining = dt;
+        const vSwitch = kSwitch * ballLaunchSpeed;
 
-            let vmag = Math.sqrt(vx * vx + vz * vz);
-            if (vmag > 0.0 && cRoll > 0) {
-                let dv = Math.min(cRoll * g * remaining, vmag);
-                vx -= dv * vx / vmag;
-                vz -= dv * vz / vmag;
-                wz = -vx / R;   // keep spin consistent with the reduced linear speed
-                wx = vz / R;
+        if (!ballRolling && aSlide > 0) {
+            // --- 滑走相。switch をまたぐフレームは、またぐところで刻んで残りを転がりに回す。 ---
+            if (speed > vSwitch) {
+                let tSlide = Math.min(remaining, (speed - vSwitch) / aSlide);
+                speed -= aSlide * tSlide;
+                remaining -= tSlide;
             }
+            if (speed <= vSwitch) {
+                ballRolling = true;
+            }
+        }
+        if (remaining > 0 && aRoll > 0) {
+            // --- 転がり相 ---
+            speed = Math.max(0.0, speed - aRoll * remaining);
+        }
+
+        // 向きは変えずに大きさだけ落とす。
+        const scale = speed / speed0;
+        vx *= scale;
+        vz *= scale;
+
+        // 見た目の回転。転がりに入ったら転がり条件 (接地点が止まる) そのもの、滑走の
+        // あいだは v0 から v_switch へ進んだ割合ぶんだけ、そこへ線形に持ち上げる。
+        let rollWx = vz / R;
+        let rollWz = -vx / R;
+        let spinRatio = 1.0;
+        if (!ballRolling && ballLaunchSpeed > vSwitch) {
+            spinRatio = (ballLaunchSpeed - speed) / (ballLaunchSpeed - vSwitch);
+            spinRatio = Math.max(0.0, Math.min(1.0, spinRatio));
         }
 
         // Apply the linear change as an impulse (J = m*dv) so PhysX still owns collision
         // response; drive the visible spin directly from our tracked angular velocity.
         ballBody.applyCentralImpulse(Qt.vector3d(ballMass * (vx - vx0), 0, ballMass * (vz - vz0)));
-        ballSpin = Qt.vector3d(wx, ballSpin.y, wz);
+        ballSpin = Qt.vector3d(rollWx * spinRatio, ballSpin.y, rollWz * spinRatio);
         ballBody.setAngularVelocity(ballSpin);
     }
 
-    function syncGameObjects() {
+    function syncGameObjects(timestepMs) {
         let blueBotData = sync.updateBot(blue, false);
         let yellowBotData = sync.updateBot(yellow, true);
         sync.updateBall();
@@ -608,27 +837,55 @@ Node {
             blueBotData.ballContacts, 
             yellowBotData.ballContacts,
             ballPosition,
-            isFoundBall
+            isFoundBall,
+            timestepMs
         );
+    }
+
+    // Places the ball's PHYSICS body at scenePosition (grounded, y=21) and, if velocity
+    // is non-null, sets its linear velocity too; otherwise it is left at rest (reset()
+    // already zeroes it). Clears every piece of ball state that could otherwise fight
+    // the placement on a later tick (a deferred kick landing, stale tracked spin/velocity,
+    // an in-progress mouse-drag teleop throw), and un-parks any robot's ball-holding
+    // marker so dribble state doesn't linger against the newly placed ball. Shared by the
+    // mouse "place ball" shortcut and network Replacement so both behave identically.
+    function placeBall(scenePosition, velocity) {
+        teleopVelocity = Qt.vector4d(0, 0, 0, 0);
+        ballVelocity = Qt.vector4d(0, 0, 0, 0);
+        prevBallVelocity = Qt.vector3d(0, 0, 0);
+        ballSpin = Qt.vector3d(0, 0, 0);
+        pendingKickVelocity = null;
+        ball.reset(scenePosition, Qt.vector3d(0, 0, 0));
+        if (velocity !== null) {
+            ball.setLinearVelocity(velocity);
+            // 速度つきの配置は蹴り出しと同じ扱い: v0 を取り直して滑走からやり直す。
+            ballLaunchSpeed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+            ballRolling = false;
+        } else {
+            ballLaunchSpeed = 0.0;
+            ballRolling = true;
+        }
+        ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
+        ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
+        preBallPosition = ballPosition;
+        skipRollingFrictionFrames = placementSettleFrames;
+        // Release the dribbler hold too: while dribbleInfo points at a robot, botMovement() forces
+        // that robot's ball distance/angle to "held" and the next dribble() would snap the ball
+        // back onto its dribbler, so a placement could never take the ball away from a holder.
+        dribbleInfo.id = -1;
+        for (let i = 0; i < blue.num; i++) {
+            bBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+            blue.holds[i] = false;
+        }
+        for (let i = 0; i < yellow.num; i++) {
+            yBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+            yellow.holds[i] = false;
+        }
     }
 
     function resetPosition(target, result) {
         if (target == "ball") {
-            teleopVelocity = Qt.vector4d(0, 0, 0, 0);
-            ballVelocity = Qt.vector4d(0, 0, 0, 0);
-            ballSpin = Qt.vector3d(0, 0, 0);
-            pendingKickVelocity = null;
-            ball.reset(result.scenePosition, Qt.vector3d(0, 0, 0));
-            ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
-            ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
-            preBallPosition = ballPosition;
-            skipRollingFrictionFrames = 30;
-            for (let i = 0; i < blue.num; i++) {
-                bBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
-            }
-            for (let i = 0; i < yellow.num; i++) {
-                yBotsFrame.children[i].collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
-            }
+            placeBall(result.scenePosition, null);
         } else if (target == "bot") {
             if (selectedRobotColor == "blue") {
                 bBotsFrame.children[botCursorID].reset(result.scenePosition, Qt.vector3d(0, -90, 0));
@@ -723,16 +980,6 @@ Node {
         ballPositions[0] = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
     }
 
-    Timer {
-        id: kickTimer
-        interval: 1000
-        repeat: false
-        running: false
-        onTriggered: {
-            kickFlag = false;
-            kickTimer.running = false;
-        }
-    }
     Component.onCompleted: {
         
         for (let i = 0; i < observer.blueRobotCount; i++) {

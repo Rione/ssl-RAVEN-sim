@@ -1,4 +1,5 @@
 #include "robot.h"
+#include <algorithm>
 #include <cmath>
 
 Robot::Robot(QObject *parent)
@@ -91,17 +92,13 @@ void Robot::processMoveCommand(const RobotMoveCommand &moveCommand) {
     }
 }
 
-void Robot::setActuationParams(float tauLin, float tauAng, float deadLin, float deadAng) {
-    tauLinearSec = tauLin;
-    tauAngularSec = tauAng;
-    deadTimeLinearSec = deadLin;
-    deadTimeAngularSec = deadAng;
+void Robot::setMotionModel(const RobotMotionModel &m) {
+    model = m;
 }
 
-// Push the command into a per-axis delay line (transport dead time), then apply
-// a first-order lag toward the delayed command. tau/dead = 0 ⇒ applied = cmd.
-float Robot::advanceAxis(float &applied, float cmd, std::deque<float> &buf,
-                         float tauSec, float deadTimeSec, float dtSec) {
+// 指令を遅延線に積み、deadTimeSec ぶん前の値を取り出す。
+// deadTimeSec = 0 なら押した値がそのまま返る。
+float Robot::delayed(std::deque<float> &buf, float cmd, float deadTimeSec, float dtSec) {
     int delaySteps = (deadTimeSec > 0.0f && dtSec > 0.0f)
                          ? static_cast<int>(std::lround(deadTimeSec / dtSec))
                          : 0;
@@ -109,21 +106,116 @@ float Robot::advanceAxis(float &applied, float cmd, std::deque<float> &buf,
     while (static_cast<int>(buf.size()) > delaySteps + 1) {
         buf.pop_front();
     }
-    const float delayedCmd = buf.front();  // command from ~delaySteps ticks ago
-    const float alpha = (tauSec > 0.0f && dtSec > 0.0f)
-                            ? (1.0f - std::exp(-dtSec / tauSec))
-                            : 1.0f;
-    applied += alpha * (delayedCmd - applied);
-    return applied;
+    // 履歴が足りないあいだ (起動直後、resetMotion() 直後、むだ時間を伸ばした直後) は
+    // 前に 0 を詰める。詰めないと front() が push したばかりの指令になってしまい、
+    // そこから delaySteps tick のあいだだけ「むだ時間 0 の台」になる — teleport のたびに
+    // MPC から見た台が入れ替わることになるので、ここは必ず埋める。
+    while (static_cast<int>(buf.size()) < delaySteps + 1) {
+        buf.push_front(0.0f);
+    }
+    return buf.front();  // command from ~delaySteps ticks ago
 }
 
+// 一次遅れ + 加減速の頭打ち。tau = 0 なら 1 tick で target に届こうとするが、
+// そのぶん加減速の上限が効く — 実機で「指令が飛んでも台はついてこない」ぶん。
+float Robot::advanceAxis(float applied, float target, float tauSec,
+                         float accelLimit, float decelLimit, float dtSec) {
+    const float alpha = (tauSec > 0.0f) ? (1.0f - std::exp(-dtSec / tauSec)) : 1.0f;
+    float next = applied + alpha * (target - applied);
+
+    // 速さが増える向きなら加速側、減る向きなら減速側の上限。符号が反転する
+    // 場合は「まず減速」なので減速側で押さえる。
+    const float limit = (std::fabs(next) > std::fabs(applied)) ? accelLimit : decelLimit;
+    if (limit > 0.0f) {
+        const float maxDelta = limit * dtSec;
+        const float delta = next - applied;
+        if (std::fabs(delta) > maxDelta) {
+            next = applied + std::copysign(maxDelta, delta);
+        }
+    }
+    return next;
+}
+
+// 車輪 k の周速 v_k = sin(α_k)·vx − cos(α_k)·vy − R·ω [mm/s]
+// (Observer::emitEncoderFeedback と同じ順運動学)。いちばん速い車輪が予算を
+// 超えるなら、その比で twist を丸ごと縮める。全速で走りながら全速で回れない、
+// という実機の制約がこれで入る。
+void Robot::applyWheelSpeedBudget(float &vx, float &vy, float &vw) const {
+    const float budget = model.wheelRimSpeedBudgetMmS;
+    if (budget <= 0.0f) {
+        return;
+    }
+    float peak = 0.0f;
+    for (int k = 0; k < 4; ++k) {
+        const float v = std::sin(model.wheelAngleRad[k]) * vx
+                      - std::cos(model.wheelAngleRad[k]) * vy
+                      - model.robotRadiusMm * vw;
+        peak = std::max(peak, std::fabs(v));
+    }
+    if (peak > budget) {
+        const float scale = budget / peak;
+        vx *= scale;
+        vy *= scale;
+        vw *= scale;
+    }
+}
+
+void Robot::resetMotion() {
+    kickspeedx = 0.0f;
+    kickspeedz = 0.0f;
+    spinner = 0.0f;
+
+    cmdTangent = 0.0f;
+    cmdNormal = 0.0f;
+    cmdAngular = 0.0f;
+    appliedTangent = 0.0f;
+    appliedNormal = 0.0f;
+    appliedAngular = 0.0f;
+    veltangent = 0.0f;
+    velnormal = 0.0f;
+    velangular = 0.0f;
+
+    // Drop anything sitting in the transport-delay pipeline so a previously
+    // latched command can't re-emerge a few ticks later.
+    delayBufTangent.clear();
+    delayBufNormal.clear();
+    delayBufAngular.clear();
+}
+
+// 指令 (cmd*) から実際に台へ与える速度 (veltangent/velnormal/velangular) までを
+// 1 tick 進める。実機の同定モデルの順で効かせる:
+//   むだ時間 → 定常ゲイン → 角速度上限 → 車輪周速の予算 → 一次遅れ → 軸別の加減速上限
+// 既定のモデル (設定なし) では素通しになる。
 void Robot::advanceActuation(float dtSec) {
-    veltangent = advanceAxis(appliedTangent, cmdTangent, delayBufTangent,
-                             tauLinearSec, deadTimeLinearSec, dtSec);
-    velnormal = advanceAxis(appliedNormal, cmdNormal, delayBufNormal,
-                            tauLinearSec, deadTimeLinearSec, dtSec);
-    velangular = advanceAxis(appliedAngular, cmdAngular, delayBufAngular,
-                             tauAngularSec, deadTimeAngularSec, dtSec);
+    if (dtSec <= 0.0f) {
+        return;
+    }
+
+    // むだ時間: いま効くのは deadTimeSec 前に出された指令。
+    const float ux = delayed(delayBufTangent, cmdTangent, model.deadTimeSec, dtSec);
+    const float uy = delayed(delayBufNormal, cmdNormal, model.deadTimeSec, dtSec);
+    const float uw = delayed(delayBufAngular, cmdAngular, model.deadTimeSec, dtSec);
+
+    // 定常ゲイン: 指令どおりの速さは出ないし、前進指令が少し横に漏れる。
+    float targetX = model.gainVx * ux + model.gainVxFromUy * uy;
+    float targetY = model.gainVy * uy + model.gainVyFromUx * ux;
+    float targetW = model.gainOmega * uw;
+
+    if (model.maxAngularVelRadS > 0.0f && std::fabs(targetW) > model.maxAngularVelRadS) {
+        targetW = std::copysign(model.maxAngularVelRadS, targetW);
+    }
+    applyWheelSpeedBudget(targetX, targetY, targetW);
+
+    appliedTangent = advanceAxis(appliedTangent, targetX, model.tauVxSec,
+                                 model.tractionAccelXMmS2, model.tractionDecelXMmS2, dtSec);
+    appliedNormal = advanceAxis(appliedNormal, targetY, model.tauVySec,
+                                model.tractionAccelYMmS2, model.tractionDecelYMmS2, dtSec);
+    appliedAngular = advanceAxis(appliedAngular, targetW, model.tauOmegaSec,
+                                 model.maxAngularAccelRadS2, model.maxAngularAccelRadS2, dtSec);
+
+    veltangent = appliedTangent;
+    velnormal = appliedNormal;
+    velangular = appliedAngular;
 }
 
 uint32_t Robot::getId() const { return id; }
