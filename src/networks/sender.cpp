@@ -22,6 +22,15 @@ Sender::Sender(const string address, quint16 port, QObject *parent) :
     // for multicast/unicast destinations, so keep it always enabled.
     boost::system::error_code ec;
     socket_.set_option(boost::asio::socket_base::broadcast(true), ec);
+    if (endpoint_.address().is_v4() && endpoint_.address().to_v4().is_multicast()) {
+        socket_.set_option(
+            boost::asio::ip::multicast::outbound_interface(
+                boost::asio::ip::address_v4::loopback()),
+            ec);
+    }
+    // RAVEN runs on the same host during sim operation. Keep local multicast
+    // loopback explicit so VisionClient can receive the generated vision stream.
+    socket_.set_option(boost::asio::ip::multicast::enable_loopback(true), ec);
 
     captureCount = 0;
     geometryCount = 0;
@@ -75,6 +84,21 @@ void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue
         }
         boost::system::error_code ec;
         socket_.send_to(boost::asio::buffer(serializedData), endpoint_, 0, ec);
+        if (ec && endpoint_.address().is_v4() && endpoint_.address().to_v4().is_multicast()) {
+            // When RAVEN runs on the same host, macOS may reject the multicast
+            // route. Its wildcard-bound receiver also accepts local unicast.
+            boost::system::error_code fallbackEc;
+            socket_.send_to(
+                boost::asio::buffer(serializedData),
+                boost::asio::ip::udp::endpoint(boost::asio::ip::address_v4::loopback(), port),
+                0,
+                fallbackEc);
+            if (!fallbackEc) {
+                ec.clear();
+            } else {
+                std::cerr << "[Sender] local fallback failed: " << fallbackEc.message() << std::endl;
+            }
+        }
         if (ec) {
             std::cerr << "[Sender] send failed: " << ec.message() << std::endl;
         } else {

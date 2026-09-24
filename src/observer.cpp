@@ -1,8 +1,18 @@
 #include "observer.h"
 
 #include <cmath>
+#include <QCoreApplication>
+#include <QDir>
 
-Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_v2.ini", QSettings::IniFormat) {
+namespace {
+QString configFilePath() {
+    const QDir projectDir(QDir::cleanPath(
+        QDir(QCoreApplication::applicationDirPath()).filePath("../..")));
+    return projectDir.filePath("config/config_v2.ini");
+}
+}
+
+Observer::Observer(QObject *parent) : QObject(parent), config(configFilePath(), QSettings::IniFormat) {
     visionMulticastAddress = config.value("Network/visionMulticastAddress", "127.0.0.1").toString();
     visionMulticastPort = config.value("Network/visionMulticastPort", 10020).toInt();
     commandListenPort = config.value("Network/commandListenPort", 20011).toInt();
