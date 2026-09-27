@@ -20,10 +20,13 @@ class Sender : public QObject{
 public:
     explicit Sender(const string address, quint16 port, QObject *parent = nullptr);
     ~Sender();
-    void send(int camera_id, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions);
+    void send(int camera_id, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions, double timestepSec);
     void setPort(string address, quint16 newPort);
     void setDetectionInfo(SSL_DetectionFrame &detection, int camera_num, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions);
     SSL_GeometryData setGeometryInfo();
+
+signals:
+    void packetSent();
 
 private:
     boost::asio::io_context ioContext_;

@@ -16,6 +16,12 @@ FeedbackSender::FeedbackSender(const std::string &address, unsigned short port)
     socket_.open(boost::asio::ip::udp::v4());
     // Same host runs RAVEN; multicast loopback must stay on so it receives.
     boost::system::error_code ec;
+    if (endpoint_.address().is_v4() && endpoint_.address().to_v4().is_multicast()) {
+        socket_.set_option(
+            boost::asio::ip::multicast::outbound_interface(
+                boost::asio::ip::address_v4::loopback()),
+            ec);
+    }
     socket_.set_option(boost::asio::ip::multicast::enable_loopback(true), ec);
     if (ec) {
         std::cerr << "[FeedbackSender] enable_loopback failed: " << ec.message() << std::endl;
@@ -73,6 +79,20 @@ void FeedbackSender::sendRobotFeedback(int robotId, const RobotFeedback &fb) {
 
     boost::system::error_code ec;
     socket_.send_to(boost::asio::buffer(datagram), endpoint_, 0, ec);
+    if (ec && endpoint_.address().is_v4() && endpoint_.address().to_v4().is_multicast()) {
+        boost::system::error_code fallbackEc;
+        socket_.send_to(
+            boost::asio::buffer(datagram),
+            boost::asio::ip::udp::endpoint(
+                boost::asio::ip::address_v4::loopback(), endpoint_.port()),
+            0,
+            fallbackEc);
+        if (!fallbackEc) {
+            ec.clear();
+        } else {
+            std::cerr << "[FeedbackSender] local fallback failed: " << fallbackEc.message() << std::endl;
+        }
+    }
     if (ec) {
         std::cerr << "[FeedbackSender] send failed: " << ec.message() << std::endl;
     }

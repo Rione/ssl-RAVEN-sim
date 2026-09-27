@@ -2,14 +2,32 @@
 # Run this script from the repo root after installing dependencies.
 #
 # Prerequisites:
-#   1. Qt 6.10.0 with MinGW 13.1.0 64-bit and Qt Quick 3D Physics installed
+#   1. Qt 6 with MinGW 13.1.0 64-bit, Qt Quick 3D and Qt Quick 3D Physics
 #      -> Run C:\Qt\MaintenanceTool.exe, log in, and install:
-#         Qt 6.10.0 > Additional Libraries > Qt Quick 3D Physics (MinGW 64-bit)
+#         Qt 6.x > Additional Libraries > Qt Quick 3D (MinGW 64-bit)
+#         Qt 6.x > Additional Libraries > Qt Quick 3D Physics (MinGW 64-bit)
+#      Verified with Qt 6.10.3.
 #   2. vcpkg packages installed:
 #      -> vcpkg install boost-asio:x64-mingw-dynamic protobuf:x64-mingw-dynamic
 #         (or run this script which will do it automatically)
 
-$QtDir     = "C:/Qt/6.10.0/mingw_64"
+# Qt location. Override with the QTDIR environment variable; otherwise the
+# newest C:\Qt\6.* install is used, so this does not go stale when Qt is
+# updated.
+if ($env:QTDIR) {
+    $QtDir = $env:QTDIR
+} else {
+    $QtDir = Get-ChildItem "C:/Qt" -Directory -Filter "6.*" -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path (Join-Path $_.FullName "mingw_64") } |
+        Sort-Object { [version]$_.Name } -Descending |
+        Select-Object -First 1 |
+        ForEach-Object { (Join-Path $_.FullName "mingw_64") -replace '\\', '/' }
+}
+if (-not $QtDir) {
+    Write-Error "Qt not found under C:\Qt. Install Qt 6 (MinGW 64-bit) or set QTDIR."
+    exit 1
+}
+Write-Host "=== Using Qt: $QtDir ==="
 $MinGWDir  = "C:/Qt/Tools/mingw1310_64/bin"
 $CMakeExe  = "C:/Qt/Tools/CMake_64/bin/cmake.exe"
 $NinjaExe  = "C:/Qt/Tools/Ninja/ninja.exe"
@@ -39,7 +57,7 @@ Write-Host "=== Running CMake configure ==="
     -DCMAKE_CXX_COMPILER="$MinGWDir/g++.exe" `
     -DCMAKE_PREFIX_PATH="$QtDir" `
     -DCMAKE_TOOLCHAIN_FILE="$VcpkgRoot/scripts/buildsystems/vcpkg.cmake" `
-    -DVCPKG_TARGET_TRIPLET=$Triplet `
+    -DVCPKG_TARGET_TRIPLET="$Triplet" `
     -DCMAKE_BUILD_TYPE=Release `
     -S "$PSScriptRoot" `
     -B "$BuildDir"
@@ -58,10 +76,30 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
-Write-Host "=== Build succeeded! ==="
+Write-Host "=== Build succeeded ==="
+
+# Copy the Qt DLLs and plugins next to the executable. Without this the build
+# succeeds but the .exe cannot start at all (missing Qt6Core.dll). This used to
+# be printed as a manual step, next to a "cmake --install" hint that does
+# nothing because CMakeLists.txt defines no install() rules.
+Write-Host ""
+Write-Host "=== Deploying the Qt runtime (windeployqt) ==="
+$WinDeployQt = "$QtDir/bin/windeployqt.exe"
+if (-not (Test-Path $WinDeployQt)) {
+    Write-Error "windeployqt not found at $WinDeployQt"
+    exit 1
+}
+& $WinDeployQt --qmldir "$PSScriptRoot/src/qml" "$BuildDir/bin/m2-Sim.exe"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "windeployqt failed."
+    exit 1
+}
+
+Write-Host ""
+Write-Host "=== Done ==="
 Write-Host "Executable: $BuildDir/bin/m2-Sim.exe"
 Write-Host ""
-Write-Host "Before running, copy DLLs alongside the .exe:"
-Write-Host "  & '$CMakeExe' --install '$BuildDir' --prefix '$BuildDir/install'"
-Write-Host "  Or run via Qt's windeployqt:"
-Write-Host "  C:/Qt/6.10.0/mingw_64/bin/windeployqt.exe --qmldir src/qml $BuildDir/bin/m2-Sim.exe"
+Write-Host "Run it from the build directory:"
+Write-Host "  cd '$BuildDir'; .\bin\m2-Sim.exe"
+Write-Host "The app reads ../src/qml/Main.qml and ../config/config_v2.ini relative to"
+Write-Host "the current directory, so starting it from anywhere else loads nothing."

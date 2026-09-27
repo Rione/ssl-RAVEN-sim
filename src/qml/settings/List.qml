@@ -30,9 +30,9 @@ Item {
         // ListElement { name: "Ball Radius"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 0.1; MaxValue: 0.5 }
         // ListElement { name: "Ball Mass"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 0.043; MaxValue: 10 }
         // ListElement { name: "Ball Static Friction"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 0.11; MaxValue: 10 }
-        ListElement { name: "Ball Dynamic Friction"; detail: "Kinetic friction while the ball slips"; slider: true; toggle: false; combo: false; InitValue: 0.3; MaxValue: 1 }
-        ListElement { name: "Ball Restitution"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 1.0; MaxValue: 1 }
-        ListElement { name: "Rolling Friction"; detail: "Rolling resistance once the ball rolls"; slider: true; toggle: false; combo: false; InitValue: 0.05; MaxValue: 1 }
+        ListElement { name: "Ball Slide Decel"; detail: "Deceleration while the ball slips [mm/s^2] (RAVEN ball_model.acc_slide_mm_s2)"; slider: true; toggle: false; combo: false; InitValue: 2159.32; MaxValue: 5000 }
+        ListElement { name: "Ball Restitution"; detail: "Ball material bounciness; averaged with the wall/robot material by PhysX"; slider: true; toggle: false; combo: false; InitValue: 0.8; MaxValue: 1 }
+        ListElement { name: "Ball Roll Decel"; detail: "Deceleration once the ball rolls [mm/s^2] (RAVEN ball_model.acc_roll_mm_s2)"; slider: true; toggle: false; combo: false; InitValue: 213.61; MaxValue: 1000 }
         ListElement { name: "Kicker Friction"; detail: ""; slider: true; toggle: false; combo: false; InitValue: 0.8; MaxValue: 1 }
     }
     ListModel {

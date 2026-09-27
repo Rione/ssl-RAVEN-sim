@@ -17,6 +17,20 @@ Sender::Sender(const string address, quint16 port, QObject *parent) :
     loop_time(0)
 {
     socket_.open(boost::asio::ip::udp::v4());
+    // Allow sending to broadcast addresses (e.g. 255.255.255.255 or subnet-directed
+    // broadcast) when the configured vision address is a broadcast address. Harmless
+    // for multicast/unicast destinations, so keep it always enabled.
+    boost::system::error_code ec;
+    socket_.set_option(boost::asio::socket_base::broadcast(true), ec);
+    if (endpoint_.address().is_v4() && endpoint_.address().to_v4().is_multicast()) {
+        socket_.set_option(
+            boost::asio::ip::multicast::outbound_interface(
+                boost::asio::ip::address_v4::loopback()),
+            ec);
+    }
+    // RAVEN runs on the same host during sim operation. Keep local multicast
+    // loopback explicit so VisionClient can receive the generated vision stream.
+    socket_.set_option(boost::asio::ip::multicast::enable_loopback(true), ec);
 
     captureCount = 0;
     geometryCount = 0;
@@ -34,9 +48,18 @@ void Sender::setPort(string address, quint16 newPort) {
     endpoint_ = boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(address), port);
 }
 
-void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions) {
-    t_capture = (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() - start_time)/1000.0;
-    // t_capture += 1/60.0;
+void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions, double timestepSec) {
+    if (!std::isfinite(timestepSec) || timestepSec <= 0.0) {
+        std::cerr << "[Sender] ignoring invalid simulation timestep: " << timestepSec << std::endl;
+        return;
+    }
+
+    // SIMULATION time, not wall clock. send() is called once per physics frame
+    // (Observer::updateObjects <- syncGameObjects <- PhysicsWorld::onFrameDone), and
+    // each physics frame advances by the timestep reported by PhysicsWorld.
+    // Accumulating the actual step keeps this timestamp on the same simulation
+    // timeline as the poses, even when PhysicsWorld uses a step shorter than 1/60 s.
+    t_capture += timestepSec;
     for (int i = 0; i < 1; i++) {
         SSL_WrapperPacket packet;
 
@@ -61,8 +84,25 @@ void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue
         }
         boost::system::error_code ec;
         socket_.send_to(boost::asio::buffer(serializedData), endpoint_, 0, ec);
+        if (ec && endpoint_.address().is_v4() && endpoint_.address().to_v4().is_multicast()) {
+            // When RAVEN runs on the same host, macOS may reject the multicast
+            // route. Its wildcard-bound receiver also accepts local unicast.
+            boost::system::error_code fallbackEc;
+            socket_.send_to(
+                boost::asio::buffer(serializedData),
+                boost::asio::ip::udp::endpoint(boost::asio::ip::address_v4::loopback(), port),
+                0,
+                fallbackEc);
+            if (!fallbackEc) {
+                ec.clear();
+            } else {
+                std::cerr << "[Sender] local fallback failed: " << fallbackEc.message() << std::endl;
+            }
+        }
         if (ec) {
             std::cerr << "[Sender] send failed: " << ec.message() << std::endl;
+        } else {
+            emit packetSent();
         }
     }
     geometryCount++;
