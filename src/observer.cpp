@@ -1,5 +1,7 @@
 #include "observer.h"
 
+#include <chrono>
+
 Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_v2.ini", QSettings::IniFormat) {
     visionMulticastAddress = config.value("Network/visionMulticastAddress", "127.0.0.1").toString();
     visionMulticastPort = config.value("Network/visionMulticastPort", 10020).toInt();
@@ -82,10 +84,12 @@ Observer::Observer(QObject *parent) : QObject(parent), config("../config/config_
     actuationClock.start();
     feedbackClock.start();
 
-    simTimer = new QTimer(this);
+    simTimer = new QChronoTimer(this);
     simTimer->setTimerType(Qt::PreciseTimer);
-    connect(simTimer, &QTimer::timeout, this, &Observer::updateSimulator);
-    simTimer->start(1000 / 60);
+    connect(simTimer, &QChronoTimer::timeout, this, &Observer::updateSimulator);
+    // Keep the fractional milliseconds: 1000 / 60 truncates to 16 ms (62.5 Hz).
+    simTimer->setInterval(std::chrono::nanoseconds(1'000'000'000 / desiredFps));
+    simTimer->start();
 }
 
 void Observer::visionReceive(const mocSim_Packet& packet) {

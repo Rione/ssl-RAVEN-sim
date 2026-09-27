@@ -6,7 +6,7 @@
 #include <QUdpSocket>
 #include <QHostAddress>
 #include <QSettings>
-#include <QTimer>
+#include <QChronoTimer>
 #include <QElapsedTimer>
 
 #include <random>
@@ -160,7 +160,7 @@ signals:
 
 private:
     QSettings config;
-    QTimer* simTimer = nullptr;
+    QChronoTimer* simTimer = nullptr;
 
     VisionReceiver *visionReceiver;
     ControlBlueReceiver *controlBlueReceiver;
