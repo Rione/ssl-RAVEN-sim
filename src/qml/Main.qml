@@ -25,7 +25,7 @@ Window {
     property var yBotPixelBalls: new Array(16).fill(Qt.vector2d(-1, -1))
     property var ball2DPosition: Qt.vector2d(0, 0)
     property var cursorPosition: Qt.point(0, 0)
-    property real fixedFrameTime: 1000.0 / 60.0
+    readonly property real fixedFrameTime: 1000.0 / observer.desiredFps
     property real runTime: fixedFrameTime
     property var selectedCamera: "Overview Camera"
     property real lastTime: 0
@@ -79,15 +79,8 @@ Window {
             onFrameDone: (timestep) => {
                 game_objects.updateGameObjects(timestep);
                 game_objects.syncGameObjects(timestep);
-            }
-        }
-        Timer {
-            interval: fixedFrameTime * 2
-            running: true
-            repeat: true
-            onTriggered: {
+                // Refresh the ball model on every physics frame (target: 60 Hz).
                 game_objects.updateBallModel();
-                
             }
         }
         RobotInfo {

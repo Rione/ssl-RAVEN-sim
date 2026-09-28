@@ -6,7 +6,6 @@
 #include <QUdpSocket>
 #include <QHostAddress>
 #include <QSettings>
-#include <QTimer>
 #include <QElapsedTimer>
 
 #include <fstream>

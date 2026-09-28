@@ -79,8 +79,8 @@ FPS を変えると挙動の再現性に影響する。**単独では着手し�
 
 ## 関連
 
-- `src/observer.cpp:88` の `simTimer->start(1000 / 60)` は**整数除算で 16 ms** になるため、
-  名目 60 Hz のこのタイマは実際には約 62.5 Hz で回っている。
+- 通信タイマーの整数除算による 16 ms（約 62.5 Hz）への丸めは修正済み。
+  現在は独立した通信タイマーを廃止し、物理フレームごとに Vision を送信する。詳細は `docs/vision-update-rate.md` を参照。
 - FPS 表示自体も常に 60 を出す別の不具合がある:
   `ai/findings/001-fps-always-60.md`
 - 同種の「動かない UI」: `ai/findings/005-geometry-settings-dead.md`

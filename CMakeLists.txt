@@ -64,7 +64,7 @@ endif()
 # ===============================
 # Qt
 # ===============================
-find_package(Qt6 REQUIRED COMPONENTS
+find_package(Qt6 6.8 REQUIRED COMPONENTS
     Core Gui Widgets Network
     Quick Quick3D Quick3DPhysics Qml
 )
