@@ -95,11 +95,19 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# simTest sets QT_QPA_PLATFORM=offscreen. windeployqt deploys qwindows by
+# default, so include the headless platform from the same Qt installation.
+$OffscreenPlugin = "$QtDir/plugins/platforms/qoffscreen.dll"
+if (-not (Test-Path $OffscreenPlugin)) {
+    Write-Error "Qt offscreen platform plugin not found: $OffscreenPlugin"
+    exit 1
+}
+Copy-Item -LiteralPath $OffscreenPlugin -Destination "$BuildDir/bin/platforms/qoffscreen.dll" -Force
+
 Write-Host ""
 Write-Host "=== Done ==="
 Write-Host "Executable: $BuildDir/bin/m2-Sim.exe"
 Write-Host ""
 Write-Host "Run it from the build directory:"
 Write-Host "  cd '$BuildDir'; .\bin\m2-Sim.exe"
-Write-Host "The app reads ../src/qml/Main.qml and ../config/config_v2.ini relative to"
-Write-Host "the current directory, so starting it from anywhere else loads nothing."
+Write-Host "QML and configuration paths are resolved relative to the executable."
