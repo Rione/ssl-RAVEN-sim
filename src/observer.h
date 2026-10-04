@@ -62,6 +62,10 @@ class Observer : public QObject {
     // ロボットに当たったときの跳ね返り (ball_model.direct_kick)。
     Q_PROPERTY(float ballNormalRestitution READ getBallNormalRestitution CONSTANT)
     Q_PROPERTY(float ballTangentRetention READ getBallTangentRetention CONSTANT)
+    // 機体に対する球の速さがこれ以上だとドリブラは捕れない [mm/s] ([Physics] DribblerCatchMaxSpeedMmS)。
+    Q_PROPERTY(float dribblerCatchMaxSpeedMmS READ getDribblerCatchMaxSpeedMmS CONSTANT)
+    // 蹴ってから次を蹴れるまでの時間 [s] ([Physics] KickerRechargeSec)。0 ならいつでも蹴れる。
+    Q_PROPERTY(float kickerRechargeSec READ getKickerRechargeSec CONSTANT)
 
 public:
     static constexpr int MaxRobots = 16;
@@ -130,6 +134,8 @@ public:
     float getBallSwitchRatio() const { return ballSwitchRatio; }
     float getBallNormalRestitution() const { return ballNormalRestitution; }
     float getBallTangentRetention() const { return ballTangentRetention; }
+    float getDribblerCatchMaxSpeedMmS() const { return dribblerCatchMaxSpeedMmS; }
+    float getKickerRechargeSec() const { return kickerRechargeSec; }
 
     void setWindowWidth(int width);
     void setWindowHeight(int height);
@@ -271,6 +277,8 @@ private:
     float ballSwitchRatio = 2.0f / 3.0f;
     float ballNormalRestitution = 0.8f;
     float ballTangentRetention = 1.0f;
+    float dribblerCatchMaxSpeedMmS = 1500.0f;
+    float kickerRechargeSec = 1.0f;
 };
 
 #endif // OBSERVER_H

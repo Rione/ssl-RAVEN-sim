@@ -10,16 +10,18 @@ QtObject {
         }
         dribbleInfo.id = -1;
 
-        color.kickspeeds[i].x *= observer.kickerFriction;
-        color.kickspeeds[i].y *= observer.kickerFriction;
+        // Scale a copy: kickspeeds[] holds the command, which stays latched until the next packet and must
+        // not shrink each time the robot kicks again.
+        let forward = color.kickspeeds[i].x * observer.kickerFriction;
+        let up = color.kickspeeds[i].y * observer.kickerFriction;
         // Defer the launch: store the velocity and let updateGameObjects() apply it only
         // after the ball.reset() above has actually moved the ball back to the mouth
         // (next physics step). Applying it now would launch the ball from the off-field
         // park position (x~100000) and send it flying into the void.
         pendingKickVelocity = Qt.vector3d(
-            color.kickspeeds[i].x * Math.cos(radian),
-            color.kickspeeds[i].y,
-            -color.kickspeeds[i].x * Math.sin(radian)
+            forward * Math.cos(radian),
+            up,
+            -forward * Math.sin(radian)
         );
     }
 

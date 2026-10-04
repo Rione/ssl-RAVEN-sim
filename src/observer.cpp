@@ -82,6 +82,17 @@ Observer::Observer(QObject *parent) : QObject(parent), config(configFilePath(), 
 
     loadRobotModels();
 
+    // --- 捕る・蹴るの機体の能力 ---
+    dribblerCatchMaxSpeedMmS = config.value("Physics/DribblerCatchMaxSpeedMmS", 1500.0).toFloat();
+    kickerRechargeSec = config.value("Physics/KickerRechargeSec", 1.0).toFloat();
+    // 蹴りの初速の上限 [m/s]。チップは 3 次元の速さ。0 以下は上限なし。
+    const float maxStraightKickMmS = config.value("Physics/MaxLinearKickSpeed", 10.0).toFloat() * 1000.0f;
+    const float maxChipKickMmS = config.value("Physics/MaxChipKickSpeed", 10.0).toFloat() * 1000.0f;
+    for (int i = 0; i < MaxRobots; ++i) {
+        blueRobots[i]->setKickLimits(maxStraightKickMmS, maxChipKickMmS);
+        yellowRobots[i]->setKickLimits(maxStraightKickMmS, maxChipKickMmS);
+    }
+
     // --- 追従診断 ---
     QString diagPath = config.value("Diag/RobotCsvPath", "").toString();
     diagRobotId = config.value("Diag/RobotId", -1).toInt();

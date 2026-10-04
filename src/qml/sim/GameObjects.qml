@@ -33,15 +33,24 @@ Node {
     property real grabOffsetZ: 0
     property real grabLiftHeight: 80
 
-    // Per-robot kicker recharge, in physics frames (1 s at 60 Hz). A kick used to raise ONE global flag that
-    // blocked every robot's kick AND dribbling for 1 s: with an opponent that kicks often, the other team could
-    // hardly ever kick or hold the ball. The kicker capacitor is per robot, and the dribbler is independent of it.
-    property int kickRechargeFrames: 60
-    property var kickCooldown: ({})
-    // A dribbler cannot catch a ball that passes it faster than this (mm/s, relative to the robot). Without
-    // this limit a robot that kicks with its dribbler running re-catches the ball in the launch frame and the
-    // kick is swallowed (the ball is 95 mm in front of it and still inside the hold cone).
-    property real dribbleCatchMaxSpeedMmS: 1500
+    // キッカーの再充電 [s] ([Physics] KickerRechargeSec)。蹴ってからこの時間は、その台は次を蹴れない。
+    // コンデンサは台ごとにあり、ドリブラはキッカーと別の装置なので、再充電のあいだも捕れる。
+    property real kickRechargeSec: observer.kickerRechargeSec
+    // 台ごとの次に蹴れる時刻 [simTimeMs] (キー "b3" / "y0")。
+    property var kickReadyAtMs: ({})
+    // 蹴った球がまだ口の窓の中にある台 (キー "b3" / "y0")。蹴った刻みでは球はまだ口の前にあり、
+    // 放っておくと回したままのドリブラが吸い戻して蹴りが消える。その球は口から離れていく途中なので、
+    // 窓を出るまで、その台は捕らないし蹴り直さない。
+    property var kickedBallInMouth: ({})
+    // 機体に対する球の速さがこれ以上だとドリブラは捕れない [mm/s] ([Physics] DribblerCatchMaxSpeedMmS)。
+    property real dribbleCatchMaxSpeedMmS: observer.dribblerCatchMaxSpeedMmS
+    // 捕れない速さで口の窓に入った球のある台 (キー "b3" / "y0")。その球は口に当たって跳ね返る。当たった
+    // ところで勢いが吸われて遅く跳ね返ることがあり、それを捕らせると速さの上限が効かない。捕れるか
+    // どうかは窓に入ってきたときの速さで決め、窓を出るまでは捕らない (蹴るのはよい: ダイレクトで蹴り返す)。
+    property var bouncedBallInMouth: ({})
+    // 1 つ前の刻みの球の速度。球が機体に当たった刻みの差分は、ぶつかる前と跳ね返った後をまたぐので
+    // 小さく出る。ぶつかる前の速さも見て、速く飛び込んだ球を当たった刻みに捕ったことにしない。
+    property var ballVelocityBefore: Qt.vector4d(0, 0, 0, 0)
     // Who may act on the ball this frame ({isYellow, id} or null). The ball can sit in several mouth cones at once
     // (a face-to-face contest): a robot asking to kick wins (a kick is instantaneous), otherwise the nearest mouth.
     // If the winner is not the current holder, the hold is released so the winner can dribble or kick the ball.
@@ -512,10 +521,12 @@ Node {
                     continue;
                 }
                 let key = (isYellow ? "y" : "b") + i;
-                let recharged = !(key in kickCooldown) || kickCooldown[key] <= 0;
-                let wantsKick = recharged && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0);
-                if (!wantsKick && !(color.spinners[i] > 0 && recharged)) {
-                    continue;   // a robot that has just kicked neither kicks nor catches until it recharges
+                if (key in kickedBallInMouth) {
+                    continue;   // the ball it has just kicked is still leaving its mouth
+                }
+                let wantsKick = kickerReady(key) && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0);
+                if (!wantsKick && !(color.spinners[i] > 0 && !(key in bouncedBallInMouth))) {
+                    continue;
                 }
                 let isHolder = dribbleInfo.id == i && dribbleInfo.isYellow == isYellow;
                 let effective = isHolder ? d - contestTakeoverMarginMm : d;   // the holder keeps a small edge
@@ -578,8 +589,8 @@ Node {
                     botRadianBall = 0;
                 }
             }
+            let kickKey = (isYellow ? "y" : "b") + i;
             if (botDistanceBall < 110 * Math.cos(Math.abs(botRadianBall)) && Math.abs(botRadianBall) < Math.PI/15.0 && ballPosition.y < 40) {
-                let kickKey = (isYellow ? "y" : "b") + i;
                 let asksKick = color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0;
                 if (ballContestWinner !== null && (ballContestWinner.id != i || ballContestWinner.isYellow != isYellow)) {
                     kickDiag(kickKey, asksKick, "contest winner is " + (ballContestWinner.isYellow ? "y" : "b") + ballContestWinner.id);
@@ -594,32 +605,37 @@ Node {
                     continue;
                 }
                 color.holds[i] = true;
-                let recharged = !(kickKey in kickCooldown) || kickCooldown[kickKey] <= 0;
-                if (asksKick && !recharged) {
-                    kickDiag(kickKey, true, "not recharged (" + kickCooldown[kickKey] + " frames left)");
+                let leaving = kickKey in kickedBallInMouth;
+                let ready = kickerReady(kickKey);
+                if (asksKick && !ready && !leaving) {
+                    kickDiag(kickKey, true, "kicker recharging (" + Math.round(kickReadyAtMs[kickKey] - simTimeMs) + " ms left)");
                 }
-                let relSpeed = ballSpeedRelativeToBody(ballVelocity, color.velocities[i], frame.position, ballPosition);
+                let relSpeed = Math.max(
+                        ballSpeedRelativeToBody(ballVelocity, color.velocities[i], frame.position, ballPosition),
+                        ballSpeedRelativeToBody(ballVelocityBefore, color.velocities[i], frame.position, ballPosition));
                 let catchable = relSpeed < dribbleCatchMaxSpeedMmS
                         || (dribbleInfo.id == i && dribbleInfo.isYellow == isYellow);   // already held: keep it
-                if (recharged && asksKick) {
-                    kickCooldown[kickKey] = kickRechargeFrames;
+                if (!catchable) {
+                    bouncedBallInMouth[kickKey] = true;
+                }
+                if (leaving) {
+                    // the ball it has just kicked is on its way out of the mouth
+                } else if (ready && asksKick) {
+                    kickReadyAtMs[kickKey] = simTimeMs + kickRechargeSec * 1000.0;
+                    kickedBallInMouth[kickKey] = true;
                     // wall-clock ms so the line can be matched to RAVEN's MCAP (log_time) without guessing from positions
                     console.log("[kick] " + kickKey + " fires " + Math.round(color.kickspeeds[i].x) + "/" + Math.round(color.kickspeeds[i].y) + " mm/s at ball ("
                             + Math.round(ballPosition.x) + ", " + Math.round(ballPosition.z) + ") t=" + Date.now());
                     control.kick(color, frame, i, color.poses[i].w, ballVelocity);
-                } else if (color.spinners[i] > 0 && catchable && recharged) {
-                    // recharged: a robot that has just kicked does not re-catch the ball it launched (the body's reset
-                    // lands one frame later and the mouth test passes meanwhile; the ball is gone for real).
-
+                } else if (color.spinners[i] > 0 && !(kickKey in bouncedBallInMouth)) {
                     control.dribble(frame, isYellow, i, botRadianBall, botDistanceBall, color);
                 }
             } else {
-                if (color.holds[i] == true) {
-                    dribbleInfo.id = -1;
-                    if (ball.position.x > 50000) {
-                        ball.reset(Qt.vector3d(frame.position.x + (95 * Math.cos(-color.poses[i].w)), 25, (frame.position.z + (95 * Math.sin(-color.poses[i].w)))), Qt.vector3d(0, 0, 0));
-                    }
-                }
+                // The mouth window is empty. The holder never gets here (its window test is forced to pass above), so
+                // leave the ball and dribbleInfo alone: a robot whose holds[] is still true from the previous frame
+                // would otherwise cancel a catch another robot made earlier in this same frame.
+                delete kickedBallInMouth[kickKey];
+                delete bouncedBallInMouth[kickKey];
                 if (frame.collisionShapes[5].position.y < 5000) {
                     frame.collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
                 }
@@ -638,6 +654,10 @@ Node {
         let pointVx = bodyVel.x + bodyVel.w * rz;
         let pointVz = bodyVel.z - bodyVel.w * rx;
         return Math.hypot(ballVel.x - pointVx, ballVel.z - pointVz) * 1000.0;
+    }
+
+    function kickerReady(key) {
+        return !(key in kickReadyAtMs) || simTimeMs >= kickReadyAtMs[key];
     }
 
     // Diagnostics: a robot with the ball in its mouth asked to kick but could not. Logged at most once per second per robot.
@@ -680,8 +700,10 @@ Node {
                 return false;
             }
             ballVelocity = Qt.vector4d(v.x / 1000.0, v.y / 1000.0, v.z / 1000.0, 0);
+            ballVelocityBefore = ballVelocity;
             ballPlacement = null;
         } else if (ballPrevSample !== null && simTimeMs > ballPrevSample.timeMs) {
+            ballVelocityBefore = ballVelocity;
             ballVelocity = mu.calcVelocity(p, ballPrevSample.position, simTimeMs - ballPrevSample.timeMs);
         }
         ballPosition = p;
@@ -692,11 +714,6 @@ Node {
     function updateGameObjects(timestep) 
     {
         diagFrame++;
-        for (let key in kickCooldown) {
-            if (kickCooldown[key] > 0) {
-                kickCooldown[key]--;
-            }
-        }
         let ballKnown = refreshBall(timestep);
         ballAngularVelocity = mu.calcVelocity(ball.eulerRotation, preBallAngularPosition, timestep);
         let teleopSpeed = Math.sqrt(teleopVelocity.x * teleopVelocity.x
@@ -914,6 +931,8 @@ Node {
         ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
         ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
         ballPrevSample = null;
+        kickedBallInMouth = ({});
+        bouncedBallInMouth = ({});
         ballPlacement = { position: scenePosition, velocity: velocity !== null ? velocity : Qt.vector3d(0, 0, 0),
                           requestedMs: simTimeMs };
         // Release the dribbler hold too: while dribbleInfo points at a robot, botMovement() forces

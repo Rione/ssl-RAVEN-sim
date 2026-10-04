@@ -23,6 +23,7 @@ void Robot::visionUpdate(mocSim_Robot_Command robotCommand) {
     id = robotCommand.id();
     kickspeedx = robotCommand.kickspeedx()*1000.0;
     kickspeedz = robotCommand.kickspeedz()*1000.0;
+    applyKickLimits(kickspeedx, kickspeedz);
     // Velocity goes through the actuation delay model (advanceActuation), not
     // straight to veltangent/velnormal/velangular which hold the applied value.
     cmdTangent = robotCommand.veltangent()*1000.0;
@@ -40,18 +41,11 @@ void Robot::controlUpdate(RobotCommand robotCommand) {
     id = robotCommand.id();
 
     if (robotCommand.has_kick_speed() && robotCommand.kick_speed() > 0) {
-        double kickSpeed = robotCommand.kick_speed();
-        double limit = robotCommand.kick_angle() > 0 ? 10000 : 10001;
-        kickSpeed = kickSpeed * 1000.0;
-        if (kickSpeed > limit) {
-            kickSpeed = limit;
-        }
-        double kickAngle = robotCommand.kick_angle() * M_PI / 180.0;
-        double length = cos(kickAngle) * kickSpeed;
-        double z = sin(kickAngle) * kickSpeed;
-        
-        kickspeedx = length;
-        kickspeedz = z;
+        const double kickSpeed = robotCommand.kick_speed() * 1000.0;
+        const double kickAngle = robotCommand.kick_angle() * M_PI / 180.0;
+        kickspeedx = static_cast<float>(cos(kickAngle) * kickSpeed);
+        kickspeedz = static_cast<float>(sin(kickAngle) * kickSpeed);
+        applyKickLimits(kickspeedx, kickspeedz);
     } else {
         kickspeedx = 0;
         kickspeedz = 0;
@@ -94,6 +88,24 @@ void Robot::processMoveCommand(const RobotMoveCommand &moveCommand) {
 
 void Robot::setMotionModel(const RobotMotionModel &m) {
     model = m;
+}
+
+void Robot::setKickLimits(float maxStraightMmS, float maxChipMmS) {
+    maxStraightKickMmS = maxStraightMmS;
+    maxChipKickMmS = maxChipMmS;
+}
+
+void Robot::applyKickLimits(float &forward, float &up) const {
+    if (up > 0.0f) {
+        const float speed = std::hypot(forward, up);
+        if (maxChipKickMmS > 0.0f && speed > maxChipKickMmS) {
+            const float scale = maxChipKickMmS / speed;
+            forward *= scale;
+            up *= scale;
+        }
+    } else if (maxStraightKickMmS > 0.0f && std::fabs(forward) > maxStraightKickMmS) {
+        forward = std::copysign(maxStraightKickMmS, forward);
+    }
 }
 
 // 指令を遅延線に積み、deadTimeSec ぶん前の値を取り出す。

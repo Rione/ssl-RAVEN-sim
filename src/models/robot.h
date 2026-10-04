@@ -45,6 +45,9 @@ public:
     // 上限値 (牽引限界・角速度・並進の速さ・車輪周速) は 0 を「上限なし」として扱うので、
     // すべて 0・ゲイン 1・tau = むだ時間 = 0 のモデルを渡せば完全な素通しになる。
     void setMotionModel(const RobotMotionModel &model);
+    // 蹴りの初速の上限 [mm/s]。ストレートは水平の速さ、チップは 3 次元の速さを押さえる。
+    // 0 以下は上限なし。指令の口 (mocSim / ssl-simulation-protocol) によらず同じ機体として効かせる。
+    void setKickLimits(float maxStraightMmS, float maxChipMmS);
     const RobotMotionModel &motionModel() const { return model; }
     // 同定モデルを通す前の生指令 [mm/s, rad/s]。診断 ([Diag] RobotCsvPath) が
     // 「RAVEN が何を出したか」と「台が実際に何を出したか」を並べるために読む。
@@ -102,6 +105,8 @@ private:
     float appliedNormal = 0.0f;
     float appliedAngular = 0.0f;
     RobotMotionModel model;
+    float maxStraightKickMmS = 0.0f;
+    float maxChipKickMmS = 0.0f;
     std::deque<float> delayBufTangent;
     std::deque<float> delayBufNormal;
     std::deque<float> delayBufAngular;
@@ -112,6 +117,8 @@ private:
     // 加速側 / 減速側で別々の上限 (mm/s^2 または rad/s^2) で頭を押さえる。
     static float advanceAxis(float applied, float target, float tauSec,
                              float accelLimit, float decelLimit, float dtSec);
+    // 蹴りの速度 (前へ x・上へ z) [mm/s] を上限まで縮める。チップは向きを保ったまま大きさを縮める。
+    void applyKickLimits(float &forward, float &up) const;
     // 並進 + 旋回の車輪周速が予算を超えるぶんだけ twist 全体を縮める。
     void applyWheelSpeedBudget(float &vx, float &vy, float &vw) const;
 };
