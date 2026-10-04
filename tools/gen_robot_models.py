@@ -107,6 +107,14 @@ SUMATRA_BALL = {
     'AccSlideMmS2': (-3000.0, f'{SUMATRA_BALL_SRC}:26。sim の geometry は球のモデルを送らないので Sumatra はこの値で予測する'),
     'AccRollMmS2': (-260.0, f'{SUMATRA_BALL_SRC}:33'),
     'KSwitch': (0.64, f'{SUMATRA_BALL_SRC}:40'),
+    # 口の板での跳ね返りと止めずに蹴る球 (GameObjects.qml directKickVelocity・botMaterial)。値は実機の板。
+    # Sumatra (simulation_match は environment SIMULATOR・simulation なし) は ConstantLossRedirectConsultant で
+    # 反発 0.55・横の保持 0.35 と予測する (同じファイルの :59 と :52 の 6 つめ = SIMULATOR)。
+    'DirectKickNormalRestitution': (0.47, 'RAVEN app/config/system_model_real.yaml の ball_model.direct_kick '
+                                          '(実機 3 番 0929、板に当たって蹴られなかった 5 本の中央値)。'
+                                          f'Sumatra は 0.55 と予測する ({SUMATRA_BALL_SRC}:59)'),
+    'DirectKickTangentRetention': (1.0, '同じ所。測っていない (RAVEN の既定)。'
+                                        f'Sumatra は 0.35 と予測する ({SUMATRA_BALL_SRC}:52)'),
 }
 
 MODELS = ('raven-id2', 'sumatra')

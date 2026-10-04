@@ -104,11 +104,29 @@ sim もそれに従う。v0 は `ballLaunchSpeed` が持ち、キック・速度
 （`initialSpeedFor`）も到達時刻（`arrivalTime`）も到達速度（`speedAfterTravel`）も
 この 3 つの数から引いているので、ここがずれると「ここで受け取れる」が毎回外れる。
 
-跳ね返りは PhysX の材質で入れる。PhysX は接触する 2 つの材質を平均するので、
-ロボット側（`botMaterial`）の反発係数は `2·DirectKickNormalRestitution − BallRestitution`
-にしてある。`tangent_retention = 1.0` は「接線方向は落ちない」なので、球とロボットの
-摩擦はどちらも 0。地面の接線力は `applyBallFriction()` が丸ごと持っているため、
-球の材質の摩擦も 0（PhysX 側にも摩擦があると滑走相が二重に減速する）。
+### 口の板（`DirectKickNormalRestitution` = e、`DirectKickTangentRetention` = t）
+
+機体の向きを板の法線 f、その左を板に沿う向きとする。
+
+- **蹴らないときの跳ね返り**は PhysX の材質で入れる。口には垂直な板（`BoxShape`、前の面は中心から 74 mm）を
+  置いてあり、球はそこに当たる。止まった機体の板で跳ね返った球の、板に垂直な速さの比が e になるよう、
+  ロボット側（`botMaterial`）の反発を決める。PhysX は 2 つの材質の反発の平均を「2 つの物の離れる速さ / 近づく速さ」に
+  使い、機体 (M = 2.5 kg) も球 (m = 0.046 kg) に押し返されるので、球だけを見た比は (e_材·M − m) / (M + m)。
+  そこで e_材 = e·(1 + m/M) + m/M とし、球の材質（`BallRestitution`、壁との跳ね返りのため）との平均が
+  e_材 になるよう `botMaterial` = 2·e_材 − `BallRestitution`（0〜1 に収まる範囲。e が小さく
+  `BallRestitution` が大きいと届かない）。摩擦は球・ロボットとも 0 なので、沿う成分は落ちない（t は使わない）。
+- **蹴ったとき**は `directKickVelocity()` が球の速度を直接決める。板のその点の速度 p（機体の並進 + 回転の ω×r）に
+  対する来た球の速度を、垂直の成分 v_n（板へ向かうと負）と沿う成分 v_t に分け、
+  `出る球 = p + (−e·v_n + v_k)·f + t·v_t·(左)`。v_k は蹴りの前への速さ（指令を `MaxLinearKickSpeed` /
+  `MaxChipKickSpeed` で押さえ、`KickerFriction` を掛けたもの）、チップの上への速さはそのまま上向き。
+  来た速度は直近 3 刻みのうち板へ最も強く向かっていたもの（窓に入ったと判じた刻みでは、PhysX がもう跳ね返して
+  いることがある）。球が板へ向かっていない（持っている・止まっている・離れていく）ときの垂直の成分は v_k と
+  今の速さの大きい方なので、止まった機体が止まった球や持った球を蹴れば、出るのは蹴りの速さそのもの。
+  RAVEN の `Rebound`（`出る球 = (v_k + e·v_n)·f + (t·v_t)·n`）を、動く機体に広げた形。
+- 鍵が無いときは e = 0.8・t = 1.0（RAVEN の既定）。
+
+球の材質の摩擦も 0。地面の接線力は `applyBallFriction()` が丸ごと持っているため
+（PhysX 側にも摩擦があると滑走相が二重に減速する）。
 
 設定パネルの `Ball Slide Decel` / `Ball Roll Decel` がこの 2 つの減速度。
 （以前の `Ball Dynamic Friction` / `Rolling Friction` は係数だったので、置き換えた。）
@@ -138,6 +156,7 @@ python3 tools/gen_robot_models.py --model sumatra --write-ini
 | キッカーの再充電 | 0 s | sim の機体はいつも満充電 |
 | 捕れる相対速度 | 4000 mm/s | パスの受け側は最大 3.2 m/s |
 | 球の減速 | 滑り −3000・転がり −260・切り替え 0.64 | `BallParameters`（sim の geometry は球のモデルを送らない） |
+| 口の板の反発 / 沿う成分の保持 | 0.47 / 1.0（実機の板、RAVEN の `system_model_real.yaml`） | Sumatra は 0.55 / 0.35 と予測する（`BallParameters` の SIMULATOR、止めずに蹴る計画は `ConstantLossRedirectConsultant`） |
 
 蹴る・捕るの鍵（`[Physics]`、鍵が無いときの既定は括弧内）:
 
@@ -172,9 +191,5 @@ Sumatra の表で生成した RAVEN の模型はそこで落ちる。
 
 ## 未解決
 
-- **ボールがロボットの口に正面から入ったときの跳ね返りが 0.8 にならない。**
-  0918 実測: 3000 mm/s でロボットへ撃つと、跳ね返りは 0.41 相当。材質は
-  球・ロボットとも `DirectKickNormalRestitution` (0.8) なので、PhysX の平均としては
-  0.8 のはず。口のドリブラ／取り合いの判定が噛んでいる可能性が高く、材質の問題とは
-  切り分けられていない。側面に当てたときの値は未計測。
+- 機体の側面（口の板の外）に当てたときの跳ね返りは測っていない。材質は口の板と同じ。
 - 転がり相の −数 % の余分な減速（上記）。
