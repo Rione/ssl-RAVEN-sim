@@ -1,7 +1,8 @@
 import QtQuick
 
 QtObject {
-    function kick(color, frame, i, radian, ballVelocity) {
+    // launchVelocity: the ball's velocity right after the kick [mm/s, scene axes] (GameObjects.directKickVelocity).
+    function kick(color, frame, i, radian, launchVelocity) {
         color.holds[i] = false;
         
         frame.collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
@@ -9,20 +10,11 @@ QtObject {
             ball.reset(Qt.vector3d(frame.position.x + (95 * Math.cos(-radian)), 25, (frame.position.z + (95 * Math.sin(-radian)))), Qt.vector3d(0, 0, 0));
         }
         dribbleInfo.id = -1;
-
-        // Scale a copy: kickspeeds[] holds the command, which stays latched until the next packet and must
-        // not shrink each time the robot kicks again.
-        let forward = color.kickspeeds[i].x * observer.kickerFriction;
-        let up = color.kickspeeds[i].y * observer.kickerFriction;
         // Defer the launch: store the velocity and let updateGameObjects() apply it only
         // after the ball.reset() above has actually moved the ball back to the mouth
         // (next physics step). Applying it now would launch the ball from the off-field
         // park position (x~100000) and send it flying into the void.
-        pendingKickVelocity = Qt.vector3d(
-            forward * Math.cos(radian),
-            up,
-            -forward * Math.sin(radian)
-        );
+        pendingKickVelocity = launchVelocity;
     }
 
     // The dribbler was switched off while this robot held the ball: put the real ball back in front of the mouth
