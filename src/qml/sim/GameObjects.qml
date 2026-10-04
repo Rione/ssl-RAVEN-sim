@@ -597,9 +597,8 @@ Node {
                 if (asksKick && !recharged) {
                     kickDiag(kickKey, true, "not recharged (" + kickCooldown[kickKey] + " frames left)");
                 }
-                let relVx = (ballVelocity.x - color.velocities[i].x) * 1000.0;   // m/s -> mm/s
-                let relVz = (ballVelocity.z - color.velocities[i].z) * 1000.0;
-                let catchable = Math.hypot(relVx, relVz) < dribbleCatchMaxSpeedMmS
+                let relSpeed = ballSpeedRelativeToBody(ballVelocity, color.velocities[i], frame.position, ballPosition);
+                let catchable = relSpeed < dribbleCatchMaxSpeedMmS
                         || (dribbleInfo.id == i && dribbleInfo.isYellow == isYellow);   // already held: keep it
                 if (recharged && asksKick) {
                     kickCooldown[kickKey] = kickRechargeFrames;
@@ -626,6 +625,18 @@ Node {
                 color.holds[i] = false;
             }
         }
+    }
+
+    // 球の速度と、機体の上で球と重なる点の速度との差の大きさ [mm/s]。その点の速度は並進に回転の
+    // ω × r を足したもの。20 rad/s で回る機体の口 (中心から 95 mm) は横に 1.9 m/s で動いている。
+    // 速度はどちらもシーンの軸の mm/ms (= m/s)、bodyVel.w は向きの変化率 [rad/ms]。向きは vision と
+    // 同じく上から見て反時計回りが正で、シーンの z は vision の y の符号違い。
+    function ballSpeedRelativeToBody(ballVel, bodyVel, bodyPos, ballPos) {
+        let rx = ballPos.x - bodyPos.x;
+        let rz = ballPos.z - bodyPos.z;
+        let pointVx = bodyVel.x + bodyVel.w * rz;
+        let pointVz = bodyVel.z - bodyVel.w * rx;
+        return Math.hypot(ballVel.x - pointVx, ballVel.z - pointVz) * 1000.0;
     }
 
     // Diagnostics: a robot with the ball in its mouth asked to kick but could not. Logged at most once per second per robot.
