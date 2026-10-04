@@ -156,7 +156,7 @@ python3 tools/gen_robot_models.py --model sumatra --write-ini
 | キッカーの再充電 | 0 s | sim の機体はいつも満充電 |
 | 捕れる相対速度 | 4000 mm/s | パスの受け側は最大 3.2 m/s |
 | 球の減速 | 滑り −3000・転がり −260・切り替え 0.64 | `BallParameters`（sim の geometry は球のモデルを送らない） |
-| 口の板の反発 / 沿う成分の保持 | 0.47 / 1.0（実機の板、RAVEN の `system_model_real.yaml`） | Sumatra は 0.55 / 0.35 と予測する（`BallParameters` の SIMULATOR、止めずに蹴る計画は `ConstantLossRedirectConsultant`） |
+| 口の板の反発 / 沿う成分の保持 | 0.55 / 0.35（実機の板は 0.47 / 1.0） | `BallParameters` の `redirectRestitutionCoefficient` / `redirectSpinFactor` の SIMULATOR（止めずに蹴る計画は `ConstantLossRedirectConsultant`） |
 
 蹴る・捕るの鍵（`[Physics]`、鍵が無いときの既定は括弧内）:
 
