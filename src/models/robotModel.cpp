@@ -30,6 +30,7 @@ RobotMotionModel RobotMotionModel::fromSettings(QSettings &cfg, const QString &g
 
     m.maxAngularVelRadS = pick(cfg, group, "MaxAngularVelRadS", base.maxAngularVelRadS);
     m.maxAngularAccelRadS2 = pick(cfg, group, "MaxAngularAccelRadS2", base.maxAngularAccelRadS2);
+    m.maxLinearVelMmS = pick(cfg, group, "MaxLinearVelMmS", base.maxLinearVelMmS);
     m.wheelRimSpeedBudgetMmS = pick(cfg, group, "WheelRimSpeedBudgetMmS", base.wheelRimSpeedBudgetMmS);
     return m;
 }

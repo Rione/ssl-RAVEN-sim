@@ -19,6 +19,7 @@ sim の台が指令どおり即座に動き、球が別の落ち方をしてい�
 | むだ時間 | `DeadTimeSec` | `robot.input_dead_time_sec` |
 | 定常ゲイン | `GainVx` `GainVy` `GainVxFromUy` `GainVyFromUx` | `robot.gain_vx` `gain_vy` `gain_vx_from_uy` `gain_vy_from_ux` |
 | 角速度の上限 | `MaxAngularVelRadS` | `robot.max_angular_velocity` |
+| 並進の速さの上限 (0 は上限なし) | `MaxLinearVelMmS` | — |
 | 車輪周速の予算 | `WheelRimSpeedBudgetMmS` | `robot.wheel_rim_speed_budget_mm_s` |
 | 一次遅れ | `TauVxSec` `TauVySec` `TauOmegaSec` | `robot.tau_vx` `tau_vy` `tau_omega` |
 | 軸別の牽引限界 | `TractionAccelXMmS2` `TractionAccelYMmS2` `TractionDecelXMmS2` `TractionDecelYMmS2` | `robot.traction_accel_x/y_mm_s2` `traction_decel_x/y_mm_s2` |

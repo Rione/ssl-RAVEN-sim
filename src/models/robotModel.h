@@ -55,6 +55,11 @@ struct RobotMotionModel {
     float maxAngularVelRadS = 10.0f;
     float maxAngularAccelRadS2 = 35.0f;
 
+    // 並進の速さの上限 [mm/s]。指令の向きは保ったまま大きさだけを押さえる。
+    // 牽引限界は加減速しか縛らないので、車輪周速の予算を 0 にした台ではこれが無いと
+    // 指令した速さがそのまま出る。0 は上限なし。
+    float maxLinearVelMmS = 0.0f;
+
     // 並進と旋回を合わせた車輪周速の予算 [mm/s] (yaml: wheel_rim_speed_budget_mm_s)。
     // 全速で走りながら全速で回ることはできない、という実機の当たり前をここで効かせる。
     float wheelRimSpeedBudgetMmS = 2250.0f;

@@ -42,7 +42,7 @@ public:
 
     // 実機の同定モデルをこの台に載せる。むだ時間・一次遅れ・定常ゲイン・軸別の
     // 牽引限界・車輪周速の予算を、指令から実際の機体速度までの間に効かせる。
-    // 上限値 (牽引限界・角速度・車輪周速) は 0 を「上限なし」として扱うので、
+    // 上限値 (牽引限界・角速度・並進の速さ・車輪周速) は 0 を「上限なし」として扱うので、
     // すべて 0・ゲイン 1・tau = むだ時間 = 0 のモデルを渡せば完全な素通しになる。
     void setMotionModel(const RobotMotionModel &model);
     const RobotMotionModel &motionModel() const { return model; }

@@ -184,7 +184,7 @@ void Robot::resetMotion() {
 
 // 指令 (cmd*) から実際に台へ与える速度 (veltangent/velnormal/velangular) までを
 // 1 tick 進める。実機の同定モデルの順で効かせる:
-//   むだ時間 → 回転の不感帯 → 定常ゲイン → 角速度上限 → 車輪周速の予算 → 一次遅れ → 軸別の加減速上限
+//   むだ時間 → 回転の不感帯 → 定常ゲイン → 角速度上限 → 並進の速さの上限 → 車輪周速の予算 → 一次遅れ → 軸別の加減速上限
 // 既定のモデル (設定なし) では素通しになる。
 void Robot::advanceActuation(float dtSec) {
     if (dtSec <= 0.0f) {
@@ -207,6 +207,14 @@ void Robot::advanceActuation(float dtSec) {
 
     if (model.maxAngularVelRadS > 0.0f && std::fabs(targetW) > model.maxAngularVelRadS) {
         targetW = std::copysign(model.maxAngularVelRadS, targetW);
+    }
+    if (model.maxLinearVelMmS > 0.0f) {
+        const float speed = std::hypot(targetX, targetY);
+        if (speed > model.maxLinearVelMmS) {
+            const float scale = model.maxLinearVelMmS / speed;
+            targetX *= scale;
+            targetY *= scale;
+        }
     }
     applyWheelSpeedBudget(targetX, targetY, targetW);
 
