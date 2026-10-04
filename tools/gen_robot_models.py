@@ -8,6 +8,11 @@ sim の `[RobotModel.<id>]` と RAVEN の `system_model_sim_ID<n>.yaml` は同�
   python3 tools/gen_robot_models.py --print-ini          # sim の [RobotModel.*] を標準出力へ
   python3 tools/gen_robot_models.py --write-raven <dir>  # RAVEN の app/config へ yaml を書く
   python3 tools/gen_robot_models.py --ball <dir>         # 球のモデルを実機の測定から 3 か所へ配る
+  python3 tools/gen_robot_models.py --model sumatra --write-ini   # sim の機体と球を Sumatra の前提にする
+
+--model は台の表を選ぶ。raven-id2 (既定) は実機 ID 2 の同定値を ID ごとの節に、sumatra は
+TIGERs の Sumatra が sim の機体に前提にしている値を全 ID 共通の 1 節に出す。--write-ini は
+config_v2.ini の台・蹴り・捕る・球の節をその表で書き換え、ほかの行には触らない。
 
 球のモデル (減速・跳ね返り) も 3 か所にある: RAVEN の実機ベース system_model_real.yaml・
 RAVEN の sim ベース system_model_sim.yaml・sim の config_v2.ini [BallModel]。測るのは実機
@@ -62,8 +67,56 @@ RAVEN_KEY = {
 }
 
 
-def model_for(robot_id):
+# --- Sumatra (TIGERs) が sim の機体に前提にしている値 ---
+# Sumatra は sim に機体の能力を送らず、自分の表 (config/botParamsDatabase.json の "Simulation") で
+# 計画する。sim の機体がそれより弱いと、Sumatra の計画が sim の都合で外れる。両チーム同じ機体にする。
+# 行番号は Sumatra の Release 2025 (0bb4c653)。値は (sim の値, 注釈)。
+SUMATRA_BOT = 'Sumatra config/botParamsDatabase.json'
+SUMATRA_NO_LAG = f'Sumatra は指令どおりに動く台で計画する ({SUMATRA_BOT}:98-120 に遅れ・ゲインの項が無い)'
+SUMATRA_MODEL = {
+    'TauVxSec': (0.0, SUMATRA_NO_LAG),
+    'TauVySec': (0.0, None),
+    'TauOmegaSec': (0.0, None),
+    'DeadTimeSec': (0.0, None),
+    'GainVx': (1.0, None),
+    'GainVy': (1.0, None),
+    'GainVyFromUx': (0.0, None),
+    'GainVxFromUy': (0.0, None),
+    'GainOmega': (1.0, None),
+    'TractionAccelXMmS2': (3500.0, f'accMaxFast 3.5 m/s^2 ({SUMATRA_BOT}:108)。ふだんの accMax 3.0 は AI が自分で抑える'),
+    'TractionAccelYMmS2': (3500.0, None),
+    'TractionDecelXMmS2': (6000.0, f'brkMax 6.0 m/s^2 ({SUMATRA_BOT}:102)'),
+    'TractionDecelYMmS2': (6000.0, None),
+    'WheelRimSpeedBudgetMmS': (0.0, '予算なし。Sumatra の movementLimits は並進と回転を別々に縛るだけ'),
+    'MaxAngularVelRadS': (20.0, f'velMaxW 20 rad/s ({SUMATRA_BOT}:104)'),
+    'MaxAngularAccelRadS2': (50.0, f'accMaxW 50 rad/s^2 ({SUMATRA_BOT}:105)'),
+    'MaxLinearVelMmS': (4000.0, f'velMaxFast 4.0 m/s ({SUMATRA_BOT}:107)。ふだんの velMax 3.0 は AI が自分で抑える'),
+}
+
+# 蹴る・捕るの機体の能力 ([Physics]) と球の減速 ([BallModel])。値は (sim の値, 注釈)。
+SUMATRA_PHYSICS = {
+    'MaxLinearKickSpeed': (7.5, f'maxAbsoluteStraightVelocity 7.5 m/s ({SUMATRA_BOT}:118)'),
+    'MaxChipKickSpeed': (5.5, f'maxAbsoluteChipVelocity 5.5 m/s、3 次元の速さ ({SUMATRA_BOT}:117)'),
+    'KickerFriction': (1.0, 'Sumatra は指令した初速で球が出る前提'),
+    'KickerRechargeSec': (0.0, 'Sumatra の sim の機体はいつも満充電 (SumatraSimBot.java:95 withKickerLevel(1.0))'),
+    'DribblerCatchMaxSpeedMmS': (4000.0, 'Sumatra のパスは受ける側で最大 3.2 m/s (PassFactory.java:24)。'
+                                         '実機も 3 m/s 程度は捕れる見立てなので余裕を持たせる'),
+}
+SUMATRA_BALL_SRC = 'Sumatra BallParameters.java (moduli-geometry)'
+SUMATRA_BALL = {
+    'AccSlideMmS2': (-3000.0, f'{SUMATRA_BALL_SRC}:26。sim の geometry は球のモデルを送らないので Sumatra はこの値で予測する'),
+    'AccRollMmS2': (-260.0, f'{SUMATRA_BALL_SRC}:33'),
+    'KSwitch': (0.64, f'{SUMATRA_BALL_SRC}:40'),
+}
+
+MODELS = ('raven-id2', 'sumatra')
+
+
+def model_for(robot_id, model='raven-id2'):
     # robot_id は出力先のセクション選択にだけ使い、物理パラメータは全 ID 共通。
+    if model == 'sumatra':
+        vals = {k: v for k, (v, _) in SUMATRA_MODEL.items()}
+        return {'src': 'Sumatra Simulation'}, vals
     base = BASE['ID2']
     vals = {k: base[k] for k in ORDER if k in base}
     vals.update(COMMON)   # 回転角加速度の計画上限は全 ID 共通
@@ -74,10 +127,21 @@ def fmt(v):
     return f"{v:.9g}"
 
 
-def emit_ini():
+def commented(key, value, note):
+    lines = [f"; {note}"] if note else []
+    return lines + [f"{key}={fmt(value)}"]
+
+
+def emit_ini(model='raven-id2'):
+    if model == 'sumatra':
+        # 全番号・両チーム共通の 1 節。番号ごとの節は書かない (書くと番号ごとに上書きされる)。
+        out = ["[RobotModel]", "; 全番号・両チーム共通。Sumatra (TIGERs) が sim の機体に前提にしている値", "Enabled=true"]
+        for k, (v, note) in SUMATRA_MODEL.items():
+            out += commented(k, v, note)
+        return "\n".join(out) + "\n"
     out = []
     for rid in range(16):
-        base, vals = model_for(rid)
+        base, vals = model_for(rid, model)
         out.append(f"[RobotModel.{rid}]")
         out.append(f"; ID{rid}: RAVEN ID2 ({base['src']}) の同一モデル")
         for k in ORDER:
@@ -86,7 +150,58 @@ def emit_ini():
     return "\n".join(out)
 
 
-def emit_raven(config_dir):
+def split_sections(lines):
+    """ini の行を [(節の名前 or None, [行])] に分ける。最初の節より前の行は名前 None。"""
+    out = [(None, [])]
+    for line in lines:
+        m = re.match(r'^\[(.+)\]\s*$', line.strip())
+        if m:
+            out.append((m.group(1), [line]))
+        else:
+            out[-1][1].append(line)
+    return out
+
+
+def set_keys(body, items):
+    """節の行 (先頭は [名前]) の中で、items の鍵を注釈つきで置き換える。無い鍵は節の末尾に足す。
+    置き換える鍵の直前にある ; の行 (前の注釈) は捨てて書き直す。"""
+    keep = []
+    for line in body[1:]:
+        m = re.match(r'^([A-Za-z0-9_]+)\s*=', line)
+        if m and m.group(1) in items:
+            while keep and keep[-1].lstrip().startswith(';'):
+                keep.pop()
+            continue
+        keep.append(line)
+    while keep and not keep[-1].strip():
+        keep.pop()
+    for k, (v, note) in items.items():
+        keep += commented(k, v, note)
+    return [body[0]] + keep + [""]
+
+
+def write_ini(ini_path, model):
+    """config_v2.ini の台 ([RobotModel*])・蹴る捕る ([Physics] の該当の鍵)・球 ([BallModel] の減速) を
+    表の値で書き換える。ほかの節と行はそのまま残す。"""
+    if model != 'sumatra':
+        raise SystemExit("--write-ini は今は --model sumatra だけ (raven-id2 は --print-ini の出力を貼る)")
+    sections = split_sections(ini_path.read_text(encoding='utf-8', errors='replace').splitlines())
+    out = []
+    for name, body in sections:
+        if name is not None and (name == 'RobotModel' or name.startswith('RobotModel.')):
+            continue
+        if name == 'Physics':
+            body = set_keys(body, SUMATRA_PHYSICS)
+        elif name == 'BallModel':
+            body = set_keys(body, SUMATRA_BALL)
+        out += body
+    while out and not out[-1].strip():
+        out.pop()
+    out += [""] + emit_ini(model).splitlines()
+    ini_path.write_text("\n".join(out) + "\n", encoding='utf-8')
+
+
+def emit_raven(config_dir, model='raven-id2'):
     """sim の駆動系 overlay を全 ID 分書く。real 用の個体ファイルには触れない。
 
     sim 用を欠かすと RAVEN は ID の一致する real 用ファイルを使う。real と sim の値が
@@ -94,11 +209,16 @@ def emit_raven(config_dir):
     """
     written = []
     for rid in range(16):
-        base, vals = model_for(rid)
-        source = f"RAVEN ID2 ({base['src']}) と同一の基準モデル"
+        base, vals = model_for(rid, model)
+        if model == 'sumatra':
+            source = "Sumatra (TIGERs) が sim の機体に前提にしている値 (全 ID 共通の [RobotModel])"
+            section = "[RobotModel]"
+        else:
+            source = f"RAVEN ID2 ({base['src']}) と同一の基準モデル"
+            section = f"[RobotModel.{rid}]"
         lines = [
             f"# 自動生成: ssl-RAVEN-sim tools/gen_robot_models.py — 手で編集しない。",
-            f"# sim の config_v2.ini [RobotModel.{rid}] と同じ台。{source}。",
+            f"# sim の config_v2.ini {section} と同じ台。{source}。",
             f"# 重なるのは robot 節だけ (Config.simSystemModel)。encoder/ball_model/kicker は",
             f"# system_model_sim.yaml のまま。",
             "robot:",
@@ -107,7 +227,8 @@ def emit_raven(config_dir):
             lines.append(f"  {RAVEN_KEY[k]}: {fmt(vals[k])}")
         # RAVEN は max_* も別経路で読む。max_accel は共通設定を保ち、減速は
         # 現在の共通既定値を使う (ID2 の減速限界は未計測)。
-        lines.append(f"  max_accel_mm_s2: {fmt(RAVEN_MAX_ACCEL_MM_S2)}")
+        max_accel = vals['TractionAccelXMmS2'] if model == 'sumatra' else RAVEN_MAX_ACCEL_MM_S2
+        lines.append(f"  max_accel_mm_s2: {fmt(max_accel)}")
         lines.append(f"  max_decel_mm_s2: {fmt(vals['TractionDecelYMmS2'])}")
         path = config_dir / f"system_model_sim_ID{rid}.yaml"
         path.write_text("\n".join(lines) + "\n")
@@ -219,18 +340,25 @@ def main():
     ap.add_argument("--write-raven", metavar="CONFIG_DIR", help="RAVEN の app/config へ yaml を書く")
     ap.add_argument("--ball", metavar="CONFIG_DIR",
                     help="球のモデルを RAVEN の system_model_real.yaml から sim ベースと config_v2.ini へ配る")
+    ap.add_argument("--model", choices=MODELS, default='raven-id2', help="台の表 (既定 raven-id2)")
+    ap.add_argument("--write-ini", action="store_true",
+                    help="config_v2.ini の台・蹴る捕る・球の節を --model の表で書き換える (今は sumatra だけ)")
     args = ap.parse_args()
-    if not args.print_ini and not args.write_raven and not args.ball:
+    if not args.print_ini and not args.write_raven and not args.ball and not args.write_ini:
         ap.print_help()
         return 1
     if args.print_ini:
-        print(emit_ini())
+        print(emit_ini(args.model))
+    if args.write_ini:
+        ini = pathlib.Path(__file__).resolve().parent.parent / "config" / "config_v2.ini"
+        write_ini(ini, args.model)
+        print(f"wrote {ini}")
     if args.write_raven:
         d = pathlib.Path(args.write_raven)
         if not d.is_dir():
             print(f"config ディレクトリが無い: {d}", file=sys.stderr)
             return 2
-        written = emit_raven(d)
+        written = emit_raven(d, args.model)
         for name in written:
             print(f"wrote {d / name}")
     if args.ball:

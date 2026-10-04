@@ -113,6 +113,48 @@ sim もそれに従う。v0 は `ballLaunchSpeed` が持ち、キック・速度
 設定パネルの `Ball Slide Decel` / `Ball Roll Decel` がこの 2 つの減速度。
 （以前の `Ball Dynamic Friction` / `Rolling Friction` は係数だったので、置き換えた。）
 
+## Sumatra の前提に揃える（`--model sumatra`）
+
+TIGERs の Sumatra は sim に機体の能力を送らず、自分の表（Sumatra の
+`config/botParamsDatabase.json` の `"Simulation"`）で計画する。sim の機体がそれより弱いと、
+Sumatra の計画が sim の都合で外れる。Sumatra と試合をさせるときは、両チームの機体をこの表に揃える。
+
+```bash
+python3 tools/gen_robot_models.py --model sumatra --write-ini
+```
+
+`config_v2.ini` の `[RobotModel*]`・`[Physics]` の蹴る捕るの鍵・`[BallModel]` の減速を表の値で
+書き換える（ほかの行には触らない）。`[RobotModel.<id>]` は消し、全番号・両チーム共通の
+`[RobotModel]` 1 つにする。値と出どころは `tools/gen_robot_models.py` の `SUMATRA_*` と ini の注釈。
+
+| 項目 | 値 | Sumatra |
+|---|---|---|
+| むだ時間・一次遅れ・ゲイン | 0・0・1 | 遅れとゲインの項が無い（指令どおりに動く台） |
+| 加速 / 減速 | 3500 / 6000 mm/s²（前後・横とも） | `accMaxFast` / `brkMax` |
+| 並進の速さの上限 | 4000 mm/s | `velMaxFast` |
+| 角速度 / 角加速度 | 20 rad/s / 50 rad/s² | `velMaxW` / `accMaxW` |
+| 車輪周速の予算 | 0（なし） | 並進と回転を別々に縛るだけ |
+| 蹴りの初速の上限 | ストレート 7.5 m/s・チップ 5.5 m/s（3 次元） | `maxAbsoluteStraightVelocity` / `maxAbsoluteChipVelocity` |
+| キッカーの再充電 | 0 s | sim の機体はいつも満充電 |
+| 捕れる相対速度 | 4000 mm/s | パスの受け側は最大 3.2 m/s |
+| 球の減速 | 滑り −3000・転がり −260・切り替え 0.64 | `BallParameters`（sim の geometry は球のモデルを送らない） |
+
+蹴る・捕るの鍵（`[Physics]`、鍵が無いときの既定は括弧内）:
+
+- `DribblerCatchMaxSpeedMmS`（1500）… 口の窓に入ってきたときの、機体の上で球と重なる点に対する
+  球の速さがこれ未満なら捕れる。これ以上で入った球は跳ね返り、窓を出るまで捕れない（蹴るのはよい）。
+- `KickerRechargeSec`（1）… 蹴ってから次を蹴れるまで。ドリブラは止めない。
+  蹴った球は、口の窓を出るまでその台が捕らず蹴り直さない（こちらは時間でなく窓が空いたかで決まる）。
+- `MaxLinearKickSpeed` / `MaxChipKickSpeed`（10 m/s）… 両方の指令の口（mocSim と
+  ssl-simulation-protocol）に同じく掛かる。
+- `KickerFriction`（0.8）… 蹴りの初速に掛ける係数。
+
+RAVEN 側の台の模型（`system_model_sim_ID<n>.yaml`）も同じ表から出す:
+`python3 tools/gen_robot_models.py --model sumatra --write-raven <ssl-RAVEN>/app/config`。
+RAVEN の `SimRobotModelCoverageTest` は `[RobotModel.<id>]` だけを読むので、共通の 1 節の ini では
+何も照合せずに通る。同じテストは RAVEN の sim 用の模型が ID 2 の基準と同じことも確かめているので、
+Sumatra の表で生成した RAVEN の模型はそこで落ちる。
+
 ## 検証の入口
 
 - `Robot::advanceActuation` … むだ時間・定常ゲイン・軸別の牽引限界・周速予算・素通しは
