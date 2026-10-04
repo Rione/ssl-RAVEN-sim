@@ -52,20 +52,21 @@ Node {
     // (mm). Without it two facing dribblers swap the ball every frame.
     property real contestTakeoverMarginMm: 30
     property var pendingKickVelocity: null
-    property var preBallPosition: Qt.vector4d(0, 0, 0, 0)
     property var ballAngularVelocity: Qt.vector4d(0, 0, 0, 0)
     property var preBallAngularPosition: Qt.vector4d(0, 0, 0, 0)
     property var ballVelocity: Qt.vector4d(0, 0, 0, 0)
     property var ballModelNum: 1
     property var ballReset: false
-    // 配置の直後、減速を止めておくフレーム数。ballVelocity は位置の差分なので、
-    // 瞬間移動をまたいだ 1 フレームは出鱈目な速さになる。それを摩擦に食わせないための
-    // 逃げで、必要なのは差分が綺麗になるまでの 2 フレームだけ。
-    // 以前は 30 (= 0.5 s) で、速度つきの配置 (RAVEN のフリーキック・ボール配置) のあいだ
-    // 球が完全に無摩擦で転がっていた。0918 実測: 3000 mm/s で置くと 0.45 s / 1350 mm を
-    // 一切減速せずに直進し、RAVEN の到達予測がそのぶん丸ごと外れていた。
-    property int skipRollingFrictionFrames: 0
-    readonly property int placementSettleFrames: 2
+    // 物理の刻みを足し上げた時刻 [ms]。球の速度は前に見た位置からの差分を、その間の時間で割って出す。
+    property real simTimeMs: 0
+    // 前に見た球の位置 {position, timeMs}。置き直しのときは捨てる (瞬間移動をまたいで差分を取らない)。
+    property var ballPrevSample: null
+    // 置き直しを頼んだが、まだ物理に効いていない球 {position, velocity [mm/s], requestedMs}。reset() は
+    // 次の刻みで効くので、それまで球は前の場所にいる。着いたのを確かめてから、頼んだ速度を球の速度にする。
+    property var ballPlacement: null
+    // 置いた先が機体と重なっていると、押し出されて置いた場所の近くに現れないことがある。そのときは
+    // この時間で着いたものとみなす (reset() が効くのは 1〜2 刻み後なので、それより十分長い)。
+    readonly property real placementLandingTimeoutMs: 250
     // Ball physical constants (scene units are mm). 42 mm diameter, ~46 g golf ball.
     // Mass is in kg, the same unit as the robot bodies (2.5 kg): 46 g is 0.046, not 46.
     property real ballRadius: 21.0
@@ -653,6 +654,41 @@ Node {
         }
     }
 
+    // この刻みの物理の結果から球の位置 (ballPosition) と速度 (ballVelocity) を取る。機体の姿勢は
+    // botMovement がこの刻みの結果を読むので、球も同じ刻みに揃える。前のフレームで Sync が出した
+    // 位置を使うと球だけ 1 刻み古くなり、速度も別の刻みの長さで割ることになる。刻みは 14〜16.7 ms で
+    // 揺れるので速さが 2 割ほど揺れ、その揺れが蹴り出しの速さ v0 を押し上げて滑り → 転がりの切り替えを早める。
+    // 球の状態がこの刻みで決まらない (置き直しが効く前・持っていた球を口へ戻す途中) なら false。
+    function refreshBall(timestep) {
+        simTimeMs += timestep;
+        let cur = null;
+        if (dribbleInfo.id != -1) {
+            cur = heldBallScenePosition();
+        } else if (Math.abs(ball.position.x) < 50000 && Math.abs(ball.position.z) < 50000) {
+            cur = ball.position;
+        }
+        if (cur === null) {
+            return false;
+        }
+        let p = Qt.vector4d(cur.x, cur.y, cur.z, 0);
+        if (ballPlacement !== null) {
+            let v = ballPlacement.velocity;
+            // 着いた後の刻みで頼んだ速度ぶん進んでいてもよい。
+            let tolerance = 5.0 + Math.hypot(v.x, v.z) * 0.05;
+            let landed = Math.hypot(p.x - ballPlacement.position.x, p.z - ballPlacement.position.z) <= tolerance;
+            if (!landed && simTimeMs - ballPlacement.requestedMs < placementLandingTimeoutMs) {
+                return false;
+            }
+            ballVelocity = Qt.vector4d(v.x / 1000.0, v.y / 1000.0, v.z / 1000.0, 0);
+            ballPlacement = null;
+        } else if (ballPrevSample !== null && simTimeMs > ballPrevSample.timeMs) {
+            ballVelocity = mu.calcVelocity(p, ballPrevSample.position, simTimeMs - ballPrevSample.timeMs);
+        }
+        ballPosition = p;
+        ballPrevSample = { position: p, timeMs: simTimeMs };
+        return true;
+    }
+
     function updateGameObjects(timestep) 
     {
         diagFrame++;
@@ -661,7 +697,7 @@ Node {
                 kickCooldown[key]--;
             }
         }
-        ballVelocity = mu.calcVelocity(ballPosition, preBallPosition, timestep);
+        let ballKnown = refreshBall(timestep);
         ballAngularVelocity = mu.calcVelocity(ball.eulerRotation, preBallAngularPosition, timestep);
         let teleopSpeed = Math.sqrt(teleopVelocity.x * teleopVelocity.x
                                     + teleopVelocity.y * teleopVelocity.y
@@ -684,16 +720,15 @@ Node {
             ballSpin = Qt.vector3d(0, 0, 0);
             ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
             pendingKickVelocity = null;
+            // この刻みで測った速度は蹴る前のもの。摩擦に食わせると止まった球として扱われる。
+            ballKnown = false;
         }
-        if (skipRollingFrictionFrames > 0)
-            skipRollingFrictionFrames--;
         // Friction: a no-spin kick slides (kinetic friction decelerates + spins it up),
         // then rolls (rolling resistance slowly bleeds off the rest), so it doesn't roll
         // forever off the field (and escape past the boundary walls into huge vision
         // coordinates).
-        if (!teleopActive && skipRollingFrictionFrames == 0)
+        if (!teleopActive && ballKnown)
             applyBallFriction(ball, ballVelocity, timestep);
-        preBallPosition = ballPosition;
         preBallAngularPosition = ball.eulerRotation;
         ballReset = true;
         
@@ -747,7 +782,7 @@ Node {
         let dt = timestep > 1.0 ? timestep / 1000.0 : timestep;   // ms -> s (fixed 1/60 s)
         let R = ballRadius;
 
-        // calcVelocity() reports mm-per-(frame ms), which is numerically m/s; convert to
+        // calcVelocity() reports mm-per-ms, which is numerically m/s; convert to
         // the scene's mm/s so it is consistent with R (mm) and the decelerations (mm/s^2).
         let vx = linearVelocity.x * 1000.0;
         let vz = linearVelocity.z * 1000.0;
@@ -878,8 +913,9 @@ Node {
         }
         ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
         ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
-        preBallPosition = ballPosition;
-        skipRollingFrictionFrames = placementSettleFrames;
+        ballPrevSample = null;
+        ballPlacement = { position: scenePosition, velocity: velocity !== null ? velocity : Qt.vector3d(0, 0, 0),
+                          requestedMs: simTimeMs };
         // Release the dribbler hold too: while dribbleInfo points at a robot, botMovement() forces
         // that robot's ball distance/angle to "held" and the next dribble() would snap the ball
         // back onto its dribbler, so a placement could never take the ball away from a holder.
