@@ -139,6 +139,7 @@ public:
 
     void setWindowWidth(int width);
     void setWindowHeight(int height);
+    Q_INVOKABLE void saveWindowSize();
     void setVisionMulticastAddress(const QString &address);
     void setVisionMulticastPort(int port);
     void setCommandListenPort(int port);

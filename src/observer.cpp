@@ -240,15 +240,14 @@ void Observer::controlReceive(const RobotControl& packet, bool isYellow) {
     else emit blueRobotsChanged();
 }
 
-// 起動のたびに QML (Main.qml の onWidthChanged / onHeightChanged) が今の大きさをそのまま書いてくる。
-// 同じ値でも setValue すると QSettings が設定ファイルを丸ごと書き直し、; の注釈と鍵の並びが消えるので、
-// 変わったときだけ書く。
+// 窓の大きさは窓が動くたびに QML (Main.qml の onWidthChanged / onHeightChanged) から届くので、ここでは覚えるだけ。
+// setValue すると QSettings が設定ファイルを丸ごと書き直し、; の注釈と鍵の並びが消える。設定ファイルに書くのは
+// 設定の画面で保存を押したとき (saveWindowSize) だけ。
 void Observer::setWindowWidth(int width) { 
     if (width == windowWidth) {
         return;
     }
     windowWidth = width; 
-    config.setValue("Display/width", width);
     emit settingChanged(); 
 }
 void Observer::setWindowHeight(int height) { 
@@ -256,8 +255,11 @@ void Observer::setWindowHeight(int height) {
         return;
     }
     windowHeight = height; 
-    config.setValue("Display/height", height);
     emit settingChanged(); 
+}
+void Observer::saveWindowSize() {
+    config.setValue("Display/width", windowWidth);
+    config.setValue("Display/height", windowHeight);
 }
 void Observer::setVisionMulticastPort(int port) { 
     visionMulticastPort = port; 
