@@ -80,6 +80,9 @@ Node {
     // Mass is in kg, the same unit as the robot bodies (2.5 kg): 46 g is 0.046, not 46.
     property real ballRadius: 21.0
     property real ballMass: 0.046
+    // 機体の質量 (球と同じ kg)。球が板に当たると機体も押し返されるので、材質の反発の平均がそのまま
+    // 見える反発にはならない (botMaterial)。
+    property real robotMass: 2.5
     // Angular velocity of the ball we integrate ourselves (rad/s). PhysX does not expose
     // a readable angular velocity, and the field has no contact friction, so the slip/roll
     // friction model owns the ball's spin. See applyBallFriction().
@@ -171,7 +174,7 @@ Node {
         DynamicRigidBody {
             objectName: "b" + String(index)
             massMode: DynamicRigidBody.MassAndInertiaTensor
-            mass: 2.5
+            mass: robotMass
             inertiaTensor: Qt.vector3d(5000, 5000, 5000)
             linearAxisLock: DynamicRigidBody.LockY
             sendContactReports: true
@@ -201,6 +204,14 @@ Node {
                 ConvexMeshShape {
                     source: "../../../assets/models/ball/meshes/ball.cooked.cvx"
                     position: Qt.vector3d(0, 5000, 0)
+                },
+                // 口の板。メッシュの口の中で球が触れるのは、斜めのチップの板 (法線が上へ 32°) と丸いドリブラ
+                // (法線が下へ 47°) で、球はどちらにも中心から前へ約 85.6 mm で触れる。どちらが先に効くかで球が
+                // 跳ね上がったり床へ押されたりして、板に垂直な跳ね返りが材質の値の半分ほどになっていた。口で球が
+                // 触れるのを垂直な面にする。前の面は、持った球 (中心から 95 mm) が触れる 74 mm。
+                BoxShape {
+                    extents: Qt.vector3d(70, 50, 10)
+                    position: Qt.vector3d(0, 25, -69)
                 }
             ]
             BlueBody.Visualize {
@@ -300,7 +311,7 @@ Node {
         DynamicRigidBody {
             objectName: "y" + String(index)
             massMode: DynamicRigidBody.MassAndInertiaTensor
-            mass: 2.5
+            mass: robotMass
             inertiaTensor: Qt.vector3d(5000, 5000, 5000)
             linearAxisLock: DynamicRigidBody.LockY
             sendContactReports: true
@@ -330,6 +341,11 @@ Node {
                 ConvexMeshShape {
                     source: "../../../assets/models/ball/meshes/ball.cooked.cvx"
                     position: Qt.vector3d(0, 5000, 0)
+                },
+                // 口の板 (青の台の同じ所の注釈を見る)。
+                BoxShape {
+                    extents: Qt.vector3d(70, 50, 10)
+                    position: Qt.vector3d(0, 25, -69)
                 }
             ]
             YellowBody.Visualize {
@@ -436,18 +452,19 @@ Node {
         restitution: observer.ballRestitution
     }
 
-    // ロボットの外装。RAVEN の ball_model.direct_kick を再現するための材質。
-    //   tangent_retention = 1.0 … 接線方向は落ちない → 摩擦 0
-    //   normal_restitution    … 法線方向の反発。PhysX は接触する 2 つの材質の平均を取るので、
-    //                           球もロボットも同じ値を持たせて平均を normal_restitution にする。
-    // 以前は ball 側を壁向けの値 (0.6) のままにして、その平均が 0.8 になる値をここに入れて
-    // いた。式としては合うが、ロボット同士の反発が 1.0 (完全弾性) になる副作用があった。
-    // 壁の跳ね返りは Field.qml の wallMaterial 側で調整する。
+    // ロボットの外装。止まった機体の板で跳ね返った球の、板に垂直な速さの比 (来た速さに対する出た速さ) を
+    // RAVEN の ball_model.direct_kick の normal_restitution (e) にする材質。接線方向は落ちないとみなし、摩擦は 0。
+    //   PhysX は接触する 2 つの材質の反発の平均を、2 つの物の離れる速さ / 近づく速さとして使う。機体は球に
+    //   押し返されるので、球だけを見た比は (e_材·M − m) / (M + m) (M = 機体、m = 球の質量) になる。
+    //   それが e になる e_材 = e·(1 + m/M) + m/M を、球の材質 ([Physics] BallRestitution、壁との跳ね返りの
+    //   ために持っている) との平均で作る: ここ = 2·e_材 − BallRestitution (0〜1 に収まる範囲で)。
+    property real botRestitutionForBall: 2.0 * (observer.ballNormalRestitution * (1.0 + ballMass / robotMass) + ballMass / robotMass)
+                                         - observer.ballRestitution
     PhysicsMaterial {
         id: botMaterial
         staticFriction: 0.0
         dynamicFriction: 0.0
-        restitution: observer.ballNormalRestitution
+        restitution: Math.max(0.0, Math.min(1.0, botRestitutionForBall))
     }
 
     DynamicRigidBody {
