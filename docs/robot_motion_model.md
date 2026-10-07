@@ -88,14 +88,14 @@ RAVEN の `BallSpeedModel` と同じ **滑走 → 転がりの 2 段一定減速
 
 | 設定キー | RAVEN | 既定値 |
 |---|---|---|
-| `AccSlideMmS2` | `ball_model.acc_slide_mm_s2` | -2159.324207613644 |
-| `AccRollMmS2` | `ball_model.acc_roll_mm_s2` | -213.609470182153 |
-| `KSwitch` | `ball_model.k_switch` | 2/3 |
+| `AccSlideMmS2` | `ball_model.acc_slide_mm_s2` | -5675 |
+| `AccRollMmS2` | `ball_model.acc_roll_mm_s2` | -297 |
+| `KSwitch` | `ball_model.k_switch` | 0.54 |
 | `DirectKickNormalRestitution` | `ball_model.direct_kick.normal_restitution` | 0.8 |
 | `DirectKickTangentRetention` | `ball_model.direct_kick.tangent_retention` | 1.0 |
 
 肝は**切り替えの基準が蹴り出しの速さ v0** であること（`v_switch = KSwitch · v0`）。
-物理的な転がり条件（剛球なら 5/7·v0）とは別物で、RAVEN が 2/3 で同定しているので
+物理的な転がり条件（剛球なら 5/7·v0）とは別物で、RAVEN の `ball_model.k_switch` は 0.54 なので
 sim もそれに従う。v0 は `ballLaunchSpeed` が持ち、キック・速度つき配置・衝突・
 外から押されたとき、のいずれでも取り直す。
 
