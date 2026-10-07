@@ -18,7 +18,8 @@ Window {
     width: windowWidth
     height: windowHeight
     visible: true
-    flags: Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint
+    // Hints alone become a Windows tool window, hidden from the taskbar and Alt+Tab.
+    flags: Qt.Window | Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint
     property int windowWidth: observer.windowWidth
     property int windowHeight: observer.windowHeight
     property var bBotPixelBalls: new Array(16).fill(Qt.vector2d(-1, -1))
