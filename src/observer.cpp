@@ -5,11 +5,22 @@
 #include <QDir>
 
 namespace {
-QString configFilePath() {
+// 起動の引数 --config で選んだ設定ファイル (絶対の道)。空なら既定のファイル。
+QString chosenConfigFilePath;
+}
+
+QString Observer::defaultConfigFilePath() {
     const QDir projectDir(QDir::cleanPath(
         QDir(QCoreApplication::applicationDirPath()).filePath("../..")));
     return projectDir.filePath("config/config_v2.ini");
 }
+
+void Observer::setConfigFilePath(const QString &path) {
+    chosenConfigFilePath = path;
+}
+
+QString Observer::configFilePath() {
+    return chosenConfigFilePath.isEmpty() ? defaultConfigFilePath() : chosenConfigFilePath;
 }
 
 Observer::Observer(QObject *parent) : QObject(parent), config(configFilePath(), QSettings::IniFormat) {

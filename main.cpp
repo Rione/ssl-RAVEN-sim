@@ -2,7 +2,9 @@
 #include <QQmlApplicationEngine>
 #include <QDebug>
 #include <QCoreApplication>
+#include <QCommandLineParser>
 #include <QDir>
+#include <QFileInfo>
 
 #include "src/observer.h"
 #include "src/models/camera.h"
@@ -51,6 +53,27 @@ public:
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
+
+    // 設定ファイルは起動の引数で選ぶ。環境変数にしないのは、動いている sim がどのファイルを読んだかを
+    // コマンド行 (ps) で見えるようにし、開いたままの端末や子のプロセスに選択が残らないようにするため。
+    QCommandLineParser parser;
+    parser.addHelpOption();
+    const QCommandLineOption configOption(
+        "config",
+        "Settings file to read and to save to from the settings panel (default: "
+            + Observer::defaultConfigFilePath() + "). A relative path is taken from the current directory.",
+        "file");
+    parser.addOption(configOption);
+    parser.process(app);
+    if (parser.isSet(configOption)) {
+        const QFileInfo file(parser.value(configOption));
+        if (!file.isFile()) {
+            qCritical("[config] 設定ファイルが無い: %s", qPrintable(file.absoluteFilePath()));
+            return 2;
+        }
+        Observer::setConfigFilePath(file.absoluteFilePath());
+    }
+    qInfo("[config] %s", qPrintable(Observer::configFilePath()));
 
     QQmlApplicationEngine engine;
     M2Sim sim(engine);

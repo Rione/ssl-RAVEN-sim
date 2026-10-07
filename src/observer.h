@@ -71,6 +71,13 @@ public:
     static constexpr int MaxRobots = 16;
     explicit Observer(QObject *parent = nullptr);
 
+    // 読み書きする設定ファイル。既定は <リポジトリ>/config/config_v2.ini。起動の引数 --config で
+    // 別のファイルを選んだときは、main が QML を読む前 (Observer を作る前) に setConfigFilePath で渡す。
+    // 設定の画面で保存したときも、このファイルに書く。
+    static QString defaultConfigFilePath();
+    static void setConfigFilePath(const QString &path);
+    static QString configFilePath();
+
     Q_INVOKABLE void updateObjects(
         QList<QVector3D> blue_positions, 
         QList<QVector3D> yellow_positions, 
