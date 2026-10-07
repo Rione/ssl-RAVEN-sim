@@ -21,6 +21,7 @@ RobotMotionModel RobotMotionModel::fromSettings(QSettings &cfg, const QString &g
     m.gainVxFromUy = pick(cfg, group, "GainVxFromUy", base.gainVxFromUy);
     m.gainVyFromUx = pick(cfg, group, "GainVyFromUx", base.gainVyFromUx);
     m.gainOmega = pick(cfg, group, "GainOmega", base.gainOmega);
+    m.omegaDeadZoneRadS = pick(cfg, group, "OmegaDeadZoneRadS", base.omegaDeadZoneRadS);
 
     m.tractionAccelXMmS2 = pick(cfg, group, "TractionAccelXMmS2", base.tractionAccelXMmS2);
     m.tractionAccelYMmS2 = pick(cfg, group, "TractionAccelYMmS2", base.tractionAccelYMmS2);

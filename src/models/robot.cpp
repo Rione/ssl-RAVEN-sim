@@ -184,7 +184,7 @@ void Robot::resetMotion() {
 
 // 指令 (cmd*) から実際に台へ与える速度 (veltangent/velnormal/velangular) までを
 // 1 tick 進める。実機の同定モデルの順で効かせる:
-//   むだ時間 → 定常ゲイン → 角速度上限 → 車輪周速の予算 → 一次遅れ → 軸別の加減速上限
+//   むだ時間 → 回転の不感帯 → 定常ゲイン → 角速度上限 → 車輪周速の予算 → 一次遅れ → 軸別の加減速上限
 // 既定のモデル (設定なし) では素通しになる。
 void Robot::advanceActuation(float dtSec) {
     if (dtSec <= 0.0f) {
@@ -194,7 +194,11 @@ void Robot::advanceActuation(float dtSec) {
     // むだ時間: いま効くのは deadTimeSec 前に出された指令。
     const float ux = delayed(delayBufTangent, cmdTangent, model.deadTimeSec, dtSec);
     const float uy = delayed(delayBufNormal, cmdNormal, model.deadTimeSec, dtSec);
-    const float uw = delayed(delayBufAngular, cmdAngular, model.deadTimeSec, dtSec);
+    float uw = delayed(delayBufAngular, cmdAngular, model.deadTimeSec, dtSec);
+    // 不感帯はゲインの前。実機は小さい角速度指令では車輪が回らず、追従器が積分で穴を越える。
+    if (model.omegaDeadZoneRadS > 0.0f && std::fabs(uw) < model.omegaDeadZoneRadS) {
+        uw = 0.0f;
+    }
 
     // 定常ゲイン: 指令どおりの速さは出ないし、前進指令が少し横に漏れる。
     float targetX = model.gainVx * ux + model.gainVxFromUy * uy;
