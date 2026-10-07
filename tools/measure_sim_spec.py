@@ -8,10 +8,13 @@ RAVEN も Sumatra も起動しない。指令は 2 つの口から送る:
 
 sim は一時ディレクトリに作った置き場から起動する。設定はポートだけを試験用にずらした写しを置く。
 並行して動いている別の sim と映像の口がぶつからないためと、sim が設定ファイルを書き戻しても
-リポジトリの config_v2.ini に響かないため。既定は窓ありで起動する (--headless で窓なし)。
+リポジトリの設定ファイルに響かないため。--config が無ければ config_v2.ini の写しを置き場の既定の
+場所に置いて引数なしで起動し、--config で選んだときはその写しを sim の --config で渡す (sim が
+起動の引数でファイルを選ぶ道を通す)。既定は窓ありで起動する (--headless で窓なし)。
 窓が試合の窓と重ならないよう、sim を使う人どうしの待ち合わせがあるならそれで包んで走らせる。
 
   python3 tools/measure_sim_spec.py --exe build/bin/m2-Sim
+  python3 tools/measure_sim_spec.py --exe build/bin/m2-Sim --config config/config_sumatra.ini
   python3 tools/measure_sim_spec.py --exe build/bin/m2-Sim --only accel,receive --json out.json
 
 --repo には src/ と assets/ と config/ と proto/ のある木を渡す (既定はこのファイルのある木)。
@@ -90,16 +93,20 @@ def write_test_ini(src, dst):
 # ---------------------------------------------------------------- sim の起動と停止
 
 class SimProcess:
-    """一時の置き場に実行ファイルの写しを置いて起動する。止めるのは自分が起動したものだけ。"""
+    """一時の置き場に実行ファイルの写しを置いて起動する。止めるのは自分が起動したものだけ。
+    pass_config が真なら設定の写しを元と同じ名前で置き、sim の --config で渡す。偽なら既定の場所
+    (config/config_v2.ini) に置いて引数なしで起動する。"""
 
-    def __init__(self, exe, repo, config):
+    def __init__(self, exe, repo, config, pass_config=False):
         self.root = pathlib.Path(tempfile.mkdtemp(prefix='measure-sim-'))
         (self.root / 'build' / 'bin').mkdir(parents=True)
         (self.root / 'config').mkdir()
         shutil.copy2(exe, self.root / 'build' / 'bin' / 'm2-Sim')
         os.symlink(pathlib.Path(repo, 'src').resolve(), self.root / 'src')
         os.symlink(pathlib.Path(repo, 'assets').resolve(), self.root / 'assets')
-        write_test_ini(config, self.root / 'config' / 'config_v2.ini')
+        self.pass_config = pass_config
+        self.config_path = self.root / 'config' / (pathlib.Path(config).name if pass_config else 'config_v2.ini')
+        write_test_ini(config, self.config_path)
         legacy = pathlib.Path(repo, 'config', 'config.ini')
         if legacy.is_file():
             shutil.copy2(legacy, self.root / 'config' / 'config.ini')
@@ -111,7 +118,10 @@ class SimProcess:
         if headless:
             env.update(QT_QPA_PLATFORM='offscreen', QSG_RENDER_LOOP='basic', QT_QUICK_CONTROLS_STYLE='Basic')
         self.log = open(self.log_path, 'w')
-        self.proc = subprocess.Popen([str(self.root / 'build' / 'bin' / 'm2-Sim')],
+        command = [str(self.root / 'build' / 'bin' / 'm2-Sim')]
+        if self.pass_config:
+            command += ['--config', str(self.config_path)]
+        self.proc = subprocess.Popen(command,
                                      cwd=self.root / 'build', env=env,
                                      stdout=self.log, stderr=subprocess.STDOUT,
                                      start_new_session=True)
@@ -435,9 +445,10 @@ class Ctx:
         self.sim = sim
         self.ini = ini
         self.n = robots_per_team
-        self.ball_slide = abs(ini_float(ini, 'BallModel', 'AccSlideMmS2', 2159.32))
-        self.ball_roll = abs(ini_float(ini, 'BallModel', 'AccRollMmS2', 213.61))
-        self.ball_switch = ini_float(ini, 'BallModel', 'KSwitch', 2.0 / 3.0)
+        # 鍵が無いときは sim の既定 (observer.cpp) と同じ数。
+        self.ball_slide = abs(ini_float(ini, 'BallModel', 'AccSlideMmS2', 5675.0))
+        self.ball_roll = abs(ini_float(ini, 'BallModel', 'AccRollMmS2', 297.0))
+        self.ball_switch = ini_float(ini, 'BallModel', 'KSwitch', 0.54)
         self.direct_e = ini_float(ini, 'BallModel', 'DirectKickNormalRestitution', 0.8)
         self.direct_t = ini_float(ini, 'BallModel', 'DirectKickTangentRetention', 1.0)
         self.kicker_friction = ini_float(ini, 'Physics', 'KickerFriction', 0.8)
@@ -1049,7 +1060,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--exe', required=True, help='測る m2-Sim の実行ファイル')
     ap.add_argument('--repo', default=str(HERE_REPO), help='src/ assets/ config/ proto/ のある木')
-    ap.add_argument('--config', help='使う config_v2.ini (既定は --repo の config/config_v2.ini)')
+    ap.add_argument('--config', help='使う設定ファイル。sim の --config で渡す (無ければ --repo の config/config_v2.ini を'
+                                     '既定の場所から読ませる)。Sumatra の機体は config/config_sumatra.ini')
     ap.add_argument('--only', help='走らせる場面をカンマ区切りで (' + ','.join(SCENES) + ')')
     ap.add_argument('--json', help='結果を JSON で書く先')
     ap.add_argument('--iface', default='127.0.0.1', help='vision のマルチキャストに参加する口の IP')
@@ -1066,7 +1078,7 @@ def main():
     pb_dir = pathlib.Path(tempfile.mkdtemp(prefix='measure-sim-pb-'))
     compile_protos(repo / 'proto' / 'pb_src', pb_dir)
 
-    sim = SimProcess(args.exe, repo, config)
+    sim = SimProcess(args.exe, repo, config, pass_config=bool(args.config))
     group = ini.get('Network', 'visionMulticastAddress', fallback='224.5.23.2')
     vision = Vision(group, TEST_PORTS['visionMulticastPort'], args.iface)
     vision.start()
