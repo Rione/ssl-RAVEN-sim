@@ -17,6 +17,7 @@ sim の台が指令どおり即座に動き、球が別の落ち方をしてい�
 | 段 | 設定キー | RAVEN の yaml |
 |---|---|---|
 | むだ時間 | `DeadTimeSec` | `robot.input_dead_time_sec` |
+| 回転の不感帯（これ未満の角速度の指令は 0。0 は不感帯なし） | `OmegaDeadZoneRadS` | — |
 | 定常ゲイン | `GainVx` `GainVy` `GainVxFromUy` `GainVyFromUx` | `robot.gain_vx` `gain_vy` `gain_vx_from_uy` `gain_vy_from_ux` |
 | 角速度の上限 | `MaxAngularVelRadS` | `robot.max_angular_velocity` |
 | 並進の速さの上限 (0 は上限なし) | `MaxLinearVelMmS` | — |
@@ -131,23 +132,40 @@ sim もそれに従う。v0 は `ballLaunchSpeed` が持ち、キック・速度
 設定パネルの `Ball Slide Decel` / `Ball Roll Decel` がこの 2 つの減速度。
 （以前の `Ball Dynamic Friction` / `Rolling Friction` は係数だったので、置き換えた。）
 
-## Sumatra の前提に揃える（`--model sumatra`）
+## Sumatra の前提に揃える（`config/config_sumatra.ini`）
 
 TIGERs の Sumatra は sim に機体の能力を送らず、自分の表（Sumatra の
 `config/botParamsDatabase.json` の `"Simulation"`）で計画する。sim の機体がそれより弱いと、
 Sumatra の計画が sim の都合で外れる。Sumatra と試合をさせるときは、両チームの機体をこの表に揃える。
 
+その設定は `config/config_sumatra.ini` に分けてあり、`config/config_v2.ini`（RAVEN の実機の機体）は
+そのまま。sim を起動するときに `--config` で選ぶ:
+
+```bash
+cd build
+./bin/m2-Sim --config ../config/config_sumatra.ini
+```
+
+- `--config` が無ければ今までどおり `config/config_v2.ini` を読む。
+- 相対の道は、今いるディレクトリから数える。ファイルが無ければ起動しない。
+- 起動の最初に `[config] <読んだファイル>` を出す。
+- 設定の画面で保存すると、選んだファイルに書く。
+
+`config_sumatra.ini` は表から作る（手で直さない）:
+
 ```bash
 python3 tools/gen_robot_models.py --model sumatra --write-ini
 ```
 
-`config_v2.ini` の `[RobotModel*]`・`[Physics]` の蹴る捕るの鍵・`[BallModel]` の減速を表の値で
-書き換える（ほかの行には触らない）。`[RobotModel.<id>]` は消し、全番号・両チーム共通の
+`config_v2.ini` を元に、`[RobotModel*]`・`[Physics]` の蹴る捕るの鍵・`[BallModel]`・つなぎ方
+（`[Encoder]` の `Team`・`[Network]` の `yellowTeamControlPort`）を表の値で書き換えて
+`config_sumatra.ini` に書く。`config_v2.ini` には触らない。ほかの行は `config_v2.ini` のまま写すので、
+`config_v2.ini` の窓・場・口の設定を直したら書き直す。`[RobotModel.<id>]` は消し、全番号・両チーム共通の
 `[RobotModel]` 1 つにする。値と出どころは `tools/gen_robot_models.py` の `SUMATRA_*` と ini の注釈。
 
 | 項目 | 値 | Sumatra |
 |---|---|---|
-| むだ時間・一次遅れ・ゲイン | 0・0・1 | 遅れとゲインの項が無い（指令どおりに動く台） |
+| むだ時間・一次遅れ・ゲイン・回転の不感帯 | 0・0・1・0 | 遅れとゲインの項が無い（指令どおりに動く台） |
 | 加速 / 減速 | 3500 / 6000 mm/s²（前後・横とも） | `accMaxFast` / `brkMax` |
 | 並進の速さの上限 | 4000 mm/s | `velMaxFast` |
 | 角速度 / 角加速度 | 20 rad/s / 50 rad/s² | `velMaxW` / `accMaxW` |
@@ -168,10 +186,22 @@ python3 tools/gen_robot_models.py --model sumatra --write-ini
   ssl-simulation-protocol）に同じく掛かる。
 - `KickerFriction`（0.8）… 蹴りの初速に掛ける係数。
 
+つなぎ方（RAVEN が黄・Sumatra が青で試合をさせるとき）:
+
+- `[Network]` の `yellowTeamControlPort` は 10399。Sumatra は青で動いても黄に速度 0 を 10302 へ送ってくるので、
+  その指令はどこにも受けない口に向けて捨てる。黄は RAVEN が mocSim（`commandListenPort`）で動かす。
+- `[Encoder]` の `Team` は `yellow`。車輪・口のセンサの返りは RAVEN が動かす黄の機体のものを送る。
+
+sim がこの設定どおりに動くかは、sim を 1 つ起動して vision で測る（RAVEN も Sumatra も要らない）:
+
+```bash
+python3 tools/measure_sim_spec.py --exe build/bin/m2-Sim --config config/config_sumatra.ini
+```
+
 RAVEN 側の台の模型（`system_model_sim_ID<n>.yaml`）も同じ表から出す:
 `python3 tools/gen_robot_models.py --model sumatra --write-raven <ssl-RAVEN>/app/config`。
-RAVEN の `SimRobotModelCoverageTest` は `[RobotModel.<id>]` だけを読むので、共通の 1 節の ini では
-何も照合せずに通る。同じテストは RAVEN の sim 用の模型が ID 2 の基準と同じことも確かめているので、
+RAVEN の `SimRobotModelCoverageTest` は隣の sim の `config_v2.ini` の `[RobotModel.<id>]` と照合し、
+`config_sumatra.ini` は見ない。RAVEN の sim 用の模型が ID 2 の基準と同じことも確かめているので、
 Sumatra の表で生成した RAVEN の模型はそこで落ちる。
 
 ## 検証の入口

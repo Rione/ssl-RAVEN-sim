@@ -8,11 +8,13 @@ sim の `[RobotModel.<id>]` と RAVEN の `system_model_sim_ID<n>.yaml` は同�
   python3 tools/gen_robot_models.py --print-ini          # sim の [RobotModel.*] を標準出力へ
   python3 tools/gen_robot_models.py --write-raven <dir>  # RAVEN の app/config へ yaml を書く
   python3 tools/gen_robot_models.py --ball <dir>         # 球のモデルを実機の測定から 3 か所へ配る
-  python3 tools/gen_robot_models.py --model sumatra --write-ini   # sim の機体と球を Sumatra の前提にする
+  python3 tools/gen_robot_models.py --model sumatra --write-ini   # Sumatra の機体の設定 config_sumatra.ini を作る
 
 --model は台の表を選ぶ。raven-id2 (既定) は実機 ID 2 の同定値を ID ごとの節に、sumatra は
 TIGERs の Sumatra が sim の機体に前提にしている値を全 ID 共通の 1 節に出す。--write-ini は
-config_v2.ini の台・蹴り・捕る・球の節をその表で書き換え、ほかの行には触らない。
+config_v2.ini (RAVEN の実機の機体) を元に、台・蹴り・捕る・球の節とつなぎ方をその表で書き換えた
+config/config_sumatra.ini を書く。config_v2.ini には触らない。sim は
+`m2-Sim --config config/config_sumatra.ini` で起動すると Sumatra の機体になる。
 
 球のモデル (減速・跳ね返り) も 3 か所にある: RAVEN の実機ベース system_model_real.yaml・
 RAVEN の sim ベース system_model_sim.yaml・sim の config_v2.ini [BallModel]。測るのは実機
@@ -83,6 +85,7 @@ SUMATRA_MODEL = {
     'GainVyFromUx': (0.0, None),
     'GainVxFromUy': (0.0, None),
     'GainOmega': (1.0, None),
+    'OmegaDeadZoneRadS': (0.0, '回転の不感帯なし (小さい角速度の指令でもそのまま回る)'),
     'TractionAccelXMmS2': (3500.0, f'accMaxFast 3.5 m/s^2 ({SUMATRA_BOT}:108)。ふだんの accMax 3.0 は AI が自分で抑える'),
     'TractionAccelYMmS2': (3500.0, None),
     'TractionDecelXMmS2': (6000.0, f'brkMax 6.0 m/s^2 ({SUMATRA_BOT}:102)'),
@@ -117,7 +120,27 @@ SUMATRA_BALL = {
                                          '実機の板は 1.0 (RAVEN の既定、測っていない)'),
 }
 
+# Sumatra と試合をさせるときのつなぎ方 (RAVEN が黄・Sumatra が青)。節 -> {鍵: (値, 注釈)}。
+SUMATRA_MATCH = {
+    'Encoder': {
+        'Team': ('yellow', '車輪・口のセンサの返り (FeedbackPort) は RAVEN が動かす黄の機体のものを送る'),
+    },
+    'Network': {
+        'yellowTeamControlPort': (10399, '黄は RAVEN が mocSim (commandListenPort) で動かす。Sumatra は青で動いても黄に速度 0 を'
+                                         '送ってくる (10302) ので、誰も RAVEN の黄を上書きしないよう、どこにも受けない口に向けて捨てる'),
+    },
+}
+
 MODELS = ('raven-id2', 'sumatra')
+# --write-ini の書き先 (config/ の中)。元にするのはいつも config_v2.ini。
+INI_FOR_MODEL = {'sumatra': 'config_sumatra.ini'}
+INI_HEADER = {
+    'sumatra': [
+        '; 自動生成: tools/gen_robot_models.py --model sumatra --write-ini。手で直さず、表を直して書き直す。',
+        '; config_v2.ini (RAVEN の実機の機体) を元に、台・蹴る捕る・球とつなぎ方を Sumatra (TIGERs) の前提にしたもの。',
+        '; sim は m2-Sim --config config/config_sumatra.ini で起動する。',
+    ],
+}
 
 
 def model_for(robot_id, model='raven-id2'):
@@ -132,7 +155,7 @@ def model_for(robot_id, model='raven-id2'):
 
 
 def fmt(v):
-    return f"{v:.9g}"
+    return v if isinstance(v, str) else f"{v:.9g}"
 
 
 def commented(key, value, note):
@@ -188,25 +211,27 @@ def set_keys(body, items):
     return [body[0]] + keep + [""]
 
 
-def write_ini(ini_path, model):
-    """config_v2.ini の台 ([RobotModel*])・蹴る捕る ([Physics] の該当の鍵)・球 ([BallModel] の減速) を
-    表の値で書き換える。ほかの節と行はそのまま残す。"""
+def write_ini(base_path, out_path, model):
+    """base_path (config_v2.ini) を元に、台 ([RobotModel*])・蹴る捕る ([Physics] の該当の鍵)・
+    球 ([BallModel])・つなぎ方 ([Encoder] / [Network] の該当の鍵) を表の値で書き換えて out_path に書く。
+    ほかの節と行は元のまま写す。base_path には触らない。"""
     if model != 'sumatra':
-        raise SystemExit("--write-ini は今は --model sumatra だけ (raven-id2 は --print-ini の出力を貼る)")
-    sections = split_sections(ini_path.read_text(encoding='utf-8', errors='replace').splitlines())
-    out = []
+        raise SystemExit("--write-ini は今は --model sumatra だけ (raven-id2 は --print-ini の出力を config_v2.ini に貼る)")
+    sections = split_sections(base_path.read_text(encoding='utf-8', errors='replace').splitlines())
+    replace = {'Physics': SUMATRA_PHYSICS, 'BallModel': SUMATRA_BALL, **SUMATRA_MATCH}
+    out = list(INI_HEADER[model]) + [""]
     for name, body in sections:
         if name is not None and (name == 'RobotModel' or name.startswith('RobotModel.')):
             continue
-        if name == 'Physics':
-            body = set_keys(body, SUMATRA_PHYSICS)
-        elif name == 'BallModel':
-            body = set_keys(body, SUMATRA_BALL)
+        if name is None:
+            body = [line for line in body if line.strip()]
+        if name in replace:
+            body = set_keys(body, replace[name])
         out += body
     while out and not out[-1].strip():
         out.pop()
     out += [""] + emit_ini(model).splitlines()
-    ini_path.write_text("\n".join(out) + "\n", encoding='utf-8')
+    out_path.write_text("\n".join(out) + "\n", encoding='utf-8')
 
 
 def emit_raven(config_dir, model='raven-id2'):
@@ -224,9 +249,10 @@ def emit_raven(config_dir, model='raven-id2'):
         else:
             source = f"RAVEN ID2 ({base['src']}) と同一の基準モデル"
             section = f"[RobotModel.{rid}]"
+        ini_name = INI_FOR_MODEL.get(model, 'config_v2.ini')
         lines = [
             f"# 自動生成: ssl-RAVEN-sim tools/gen_robot_models.py — 手で編集しない。",
-            f"# sim の config_v2.ini {section} と同じ台。{source}。",
+            f"# sim の {ini_name} {section} と同じ台。{source}。",
             f"# 重なるのは robot 節だけ (Config.simSystemModel)。encoder/ball_model/kicker は",
             f"# system_model_sim.yaml のまま。",
             "robot:",
@@ -350,7 +376,8 @@ def main():
                     help="球のモデルを RAVEN の system_model_real.yaml から sim ベースと config_v2.ini へ配る")
     ap.add_argument("--model", choices=MODELS, default='raven-id2', help="台の表 (既定 raven-id2)")
     ap.add_argument("--write-ini", action="store_true",
-                    help="config_v2.ini の台・蹴る捕る・球の節を --model の表で書き換える (今は sumatra だけ)")
+                    help="config_v2.ini を元に、台・蹴る捕る・球の節とつなぎ方を --model の表で書き換えた "
+                         "config/config_<model>.ini を書く (今は sumatra だけ)")
     args = ap.parse_args()
     if not args.print_ini and not args.write_raven and not args.ball and not args.write_ini:
         ap.print_help()
@@ -358,9 +385,14 @@ def main():
     if args.print_ini:
         print(emit_ini(args.model))
     if args.write_ini:
-        ini = pathlib.Path(__file__).resolve().parent.parent / "config" / "config_v2.ini"
-        write_ini(ini, args.model)
-        print(f"wrote {ini}")
+        config_dir = pathlib.Path(__file__).resolve().parent.parent / "config"
+        if args.model not in INI_FOR_MODEL:
+            print("--write-ini は今は --model sumatra だけ (raven-id2 は --print-ini の出力を config_v2.ini に貼る)",
+                  file=sys.stderr)
+            return 2
+        out = config_dir / INI_FOR_MODEL[args.model]
+        write_ini(config_dir / "config_v2.ini", out, args.model)
+        print(f"wrote {out}")
     if args.write_raven:
         d = pathlib.Path(args.write_raven)
         if not d.is_dir():
