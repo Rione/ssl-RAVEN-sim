@@ -466,6 +466,15 @@ class Ctx:
                 r = f.robot(team, 0) or (float('nan'),) * 3
                 fh.write(f'{f.t:.4f},{b[0]:.1f},{b[1]:.1f},{b[2]:.1f},{r[0]:.1f},{r[1]:.1f},{r[2]:.4f}\n')
 
+    def wait(self, seconds):
+        """描画負荷による実時間とのずれを避け、物理時刻で待つ。"""
+        target = self.now() + seconds
+        deadline = time.monotonic() + max(15.0, seconds * 10)
+        while self.now() < target:
+            if time.monotonic() > deadline:
+                raise RuntimeError('simulation physics clock stopped')
+            time.sleep(0.01)
+
     def now(self):
         f = self.vision.latest()
         return f.t if f else 0.0
@@ -910,9 +919,41 @@ def diffs(frames, key):
     return out
 
 
+def analyze_rebound(frames, team):
+    """受動反発: 反転をまたぐ差分を除き、最初の完全な出射区間を使う。床の減速を探索しない。"""
+    ball = diffs(frames, lambda f: f.ball)
+    body = diffs(frames, lambda f: f.robot(team, 0))
+    relative = []
+    for i, (v, u) in enumerate(zip(ball, body)):
+        r = frames[i].robot(team, 0)
+        next_robot = frames[i + 1].robot(team, 0)
+        if v is None or u is None or r is None or next_robot is None:
+            relative.append(None)
+            continue
+        w = r[2]
+        omega = ((next_robot[2] - w + math.pi) % (2 * math.pi) - math.pi) / (frames[i + 1].t - frames[i].t)
+        # 接触点 (口の中心) の並進 + 回転速度を引く。
+        px = u[0] - omega * MOUTH_MM * math.sin(w)
+        py = u[1] + omega * MOUTH_MM * math.cos(w)
+        x, y = v[0] - px, v[1] - py
+        relative.append((x * math.cos(w) + y * math.sin(w), -x * math.sin(w) + y * math.cos(w)))
+    event = next((i for i in range(2, len(relative) - 1)
+                  if relative[i] is not None and relative[i][0] > 50
+                  and relative[i - 2] is not None and relative[i - 2][0] < -50), None)
+    if event is None or relative[event + 1] is None:
+        return {'error': 'no incoming/outgoing rebound samples'}
+    incoming, outgoing = relative[event - 2], relative[event + 1]
+    return {'in_rel_normal': -incoming[0], 'out_rel_normal': outgoing[0],
+            'in_rel_tangent': incoming[1], 'out_rel_tangent': outgoing[1],
+            'normal_ratio': outgoing[0] / -incoming[0],
+            'tangent_ratio': outgoing[1] / incoming[1] if abs(incoming[1]) > 100 else None}
+
+
 def analyze_direct(ctx, frames, team, kick, kick_angle, launched):
     """球の 1 刻みごとの速度の並びから、変わった刻み (当たった・蹴った) の前後の速度を取る。
     来た速度 = 変わる直前の刻み、出た速度 = 変わった後で 2 刻み続けて揃った最初の刻み。"""
+    if kick == 0 and launched:
+        return analyze_rebound(frames, team)
     res = {}
     ball = diffs(frames, lambda f: f.ball)
     body = diffs(frames, lambda f: f.robot(team, 0))
@@ -930,7 +971,8 @@ def analyze_direct(ctx, frames, team, kick, kick_angle, launched):
     # sim は指令 (蹴りの速度・減速の力) を 2 刻み遅れて物理に渡すので、蹴るときは先に板で跳ね返った刻みが 1〜2 つ
     # 挟まり、当たった刻みの差分は当たる前と後をまたぐ。変わり目から 8 刻みのうち最後に変わった刻み (1 刻みの減速
     # 50 mm/s より大きく変わった刻み) の次の刻みを出た速度とする (減速の力はまだ効いていない)。
-    small_jump = 75.0
+    largest_dt = max((b.t - a.t for a, b in zip(frames, frames[1:]) if b.t > a.t), default=1 / 60)
+    small_jump = max(75.0, ctx.ball_slide * largest_dt * 1.25)
     last = event
     for j in range(event + 1, min(event + 8, len(ball))):
         if ball[j] and ball[j - 1] and math.hypot(ball[j][0] - ball[j - 1][0], ball[j][1] - ball[j - 1][1]) > small_jump:
@@ -992,7 +1034,7 @@ def scene_direct(ctx, team='blue'):
             x_start = x_meet
         ctx.place(team, 0, x_start, DIRECT_LANE_Y, 0.0)
         ctx.cmd.teleport(ball=(4000.0, -3000.0))
-        time.sleep(0.2)
+        ctx.wait(0.2)
         log_from = len(ctx.sim.log_text())
         mouth = (x_meet + MOUTH_MM, DIRECT_LANE_Y)
         launched = arrival > 0.0
@@ -1003,19 +1045,19 @@ def scene_direct(ctx, team='blue'):
             start = (mouth[0] + DIRECT_GAP_MM * math.cos(phi), mouth[1] + DIRECT_GAP_MM * math.sin(phi))
             if u > 0.0:
                 ctx.cmd.set(team, 0, forward=u / 1000.0, kick=kick, kick_angle_deg=kick_angle)
-                time.sleep(max(0.0, run_s + 0.05 - travel))
+                ctx.wait(max(0.0, run_s + 0.05 - travel))
             else:
                 ctx.cmd.set(team, 0, kick=kick, kick_angle_deg=kick_angle)
-                time.sleep(0.1)
+                ctx.wait(0.1)
             mark = ctx.vision.mark()
             ctx.cmd.teleport(ball=(start[0], start[1], -v0 * math.cos(phi), -v0 * math.sin(phi)))
-            time.sleep(travel + 0.5)
+            ctx.wait(travel + 0.5)
         else:
             ctx.cmd.teleport(ball=(mouth[0] + 2.0, mouth[1]))
-            time.sleep(0.3)
+            ctx.wait(0.3)
             mark = ctx.vision.mark()
             ctx.cmd.set(team, 0, kick=kick, kick_angle_deg=kick_angle)
-            time.sleep(0.5)
+            ctx.wait(0.5)
         ctx.cmd.set(team, 0)
         frames = ctx.vision.since(mark)
         if launched:
@@ -1029,7 +1071,7 @@ def scene_direct(ctx, team='blue'):
                'kicks_fired': ctx.kicks_fired(log_from, key)}
         res.update(analyze_direct(ctx, frames, team, kick, kick_angle, launched))
         out.append(res)
-        time.sleep(0.2)
+        ctx.wait(0.2)
     return out
 
 

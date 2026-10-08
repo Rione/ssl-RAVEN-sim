@@ -90,6 +90,8 @@ SUMATRA_MODEL = {
     'TractionAccelYMmS2': (3500.0, None),
     'TractionDecelXMmS2': (6000.0, f'brkMax 6.0 m/s^2 ({SUMATRA_BOT}:102)'),
     'TractionDecelYMmS2': (6000.0, None),
+    'MaxLinearAccelMmS2': (3500.0, '方向によらない合成加速度の上限'),
+    'MaxLinearDecelMmS2': (6000.0, '方向によらない合成減速度の上限'),
     'WheelRimSpeedBudgetMmS': (0.0, '予算なし。Sumatra の movementLimits は並進と回転を別々に縛るだけ'),
     'MaxAngularVelRadS': (20.0, f'velMaxW 20 rad/s ({SUMATRA_BOT}:104)'),
     'MaxAngularAccelRadS2': (50.0, f'accMaxW 50 rad/s^2 ({SUMATRA_BOT}:105)'),

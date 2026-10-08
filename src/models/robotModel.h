@@ -51,6 +51,10 @@ struct RobotMotionModel {
     float tractionDecelXMmS2 = 3000.0f;
     float tractionDecelYMmS2 = 3000.0f;
 
+    // 合成並進加減速度 [mm/s²]。両方 > 0 で有効。未指定なら従来の軸別制限。
+    float maxLinearAccelMmS2 = 0.0f;
+    float maxLinearDecelMmS2 = 0.0f;
+
     // 角速度の限界 (RAVEN の app/config/physics.yaml: max_angular_velocity / _acceleration)。
     float maxAngularVelRadS = 10.0f;
     float maxAngularAccelRadS2 = 35.0f;

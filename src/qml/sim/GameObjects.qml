@@ -3,6 +3,7 @@ import QtQuick3D
 import QtQuick3D.Physics
 import Qt.labs.folderlistmodel
 import M2
+import "BallContact.js" as BallContact
 
 import "../../../assets/models/bot/Rione/viz" as BlueBody
 import "../../../assets/models/bot/Rione/rigid_body" as BlueLightBody
@@ -40,7 +41,8 @@ Node {
     property var kickReadyAtMs: ({})
     // 蹴った球がまだ口の窓の中にある台 (キー "b3" / "y0")。蹴った刻みでは球はまだ口の前にあり、
     // 放っておくと回したままのドリブラが吸い戻して蹴りが消える。その球は口から離れていく途中なので、
-    // 窓を出るまで、その台は捕らないし蹴り直さない。
+    // 窓を出るか、発射完了後に口元で止まるまで、その台は捕らないし蹴り直さない。
+    // 値はキックした物理時刻 [ms]。
     property var kickedBallInMouth: ({})
     // 機体に対する球の速さがこれ以上だとドリブラは捕れない [mm/s] ([Physics] DribblerCatchMaxSpeedMmS)。
     property real dribbleCatchMaxSpeedMmS: observer.dribblerCatchMaxSpeedMmS
@@ -50,6 +52,7 @@ Node {
     property var bouncedBallInMouth: ({})
     // 1 つ前の刻みの球の速度。球が機体に当たった刻みの差分は、ぶつかる前と跳ね返った後をまたぐので
     // 小さく出る。ぶつかる前の速さも見て、速く飛び込んだ球を当たった刻みに捕ったことにしない。
+    property real lastBallTimestepMs: 1000 / 60
     property var ballVelocityBefore: Qt.vector4d(0, 0, 0, 0)
     // 直近の刻みの球の速度 (新しい順、今の刻みを含めて recentBallVelocityCount 個)。板に当たった刻みと、その次の
     // 刻みの差分は跳ね返りをまたぐ。どの刻みで窓に入ったと判じても当たる前の速度が残るだけの長さ。
@@ -611,6 +614,14 @@ Node {
                 }
             }
             let kickKey = (isYellow ? "y" : "b") + i;
+            if (kickKey in kickedBallInMouth) {
+                let point = bodyPointVelocity(color, i, frame);
+                let normalSpeed = (ballVelocity.x * 1000 - point.x) * Math.cos(color.poses[i].w)
+                                - (ballVelocity.z * 1000 - point.y) * Math.sin(color.poses[i].w);
+                if (BallContact.canRecover(simTimeMs - kickedBallInMouth[kickKey], normalSpeed,
+                                           pendingKickVelocity !== null))
+                    delete kickedBallInMouth[kickKey];
+            }
             if (botDistanceBall < 110 * Math.cos(Math.abs(botRadianBall)) && Math.abs(botRadianBall) < Math.PI/15.0 && ballPosition.y < 40) {
                 let asksKick = color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0;
                 if (ballContestWinner !== null && (ballContestWinner.id != i || ballContestWinner.isYellow != isYellow)) {
@@ -643,7 +654,7 @@ Node {
                     // the ball it has just kicked is on its way out of the mouth
                 } else if (ready && asksKick) {
                     kickReadyAtMs[kickKey] = simTimeMs + kickRechargeSec * 1000.0;
-                    kickedBallInMouth[kickKey] = true;
+                    kickedBallInMouth[kickKey] = simTimeMs;
                     // wall-clock ms so the line can be matched to RAVEN's MCAP (log_time) without guessing from positions
                     console.log("[kick] " + kickKey + " fires " + Math.round(color.kickspeeds[i].x) + "/" + Math.round(color.kickspeeds[i].y) + " mm/s at ball ("
                             + Math.round(ballPosition.x) + ", " + Math.round(ballPosition.z) + ") t=" + Date.now());
@@ -706,20 +717,15 @@ Node {
         let px = point.x;
         let pz = point.y;
         // 窓に入ったと判じた刻みの差分は、PhysX が先に跳ね返した後の速度になっていることがある。持っていないなら、
-        // 直近の刻みのうち板へ最も強く向かっていたものを来た速度にする。持っている球は口に吸われているので今の速度だけ。
+        // 直近の刻みのうち最後に板へ向かっていたものを来た速度にする。持っている球は口に吸われているので今の速度だけ。
         let holder = dribbleInfo.id == i && dribbleInfo.isYellow == (color === yellow);
         let samples = holder || recentBallVelocities.length == 0 ? [ballVelocity] : recentBallVelocities;
-        let relN = 0;
-        let relT = 0;
-        for (let k = 0; k < samples.length; k++) {
-            let vx = samples[k].x * 1000.0 - px;
-            let vz = samples[k].z * 1000.0 - pz;
-            let n = vx * fx + vz * fz;
-            if (k == 0 || n < relN) {
-                relN = n;
-                relT = vx * tx + vz * tz;
-            }
-        }
+        let incoming = holder ? ballVelocity : BallContact.incomingVelocity(samples, px, pz, fx, fz,
+                Math.max(observer.ballSlideDecelMmS2, observer.ballRollDecelMmS2) * lastBallTimestepMs * 0.001 * 1.5 + 20);
+        let vx = incoming.x * 1000.0 - px;
+        let vz = incoming.z * 1000.0 - pz;
+        let relN = vx * fx + vz * fz;
+        let relT = vx * tx + vz * tz;
         let e = observer.ballNormalRestitution;
         let t = observer.ballTangentRetention;
         let outN = relN < 0 ? -e * relN + kickForward : Math.max(relN, kickForward);
@@ -752,6 +758,7 @@ Node {
     // 球の状態がこの刻みで決まらない (置き直しが効く前・持っていた球を口へ戻す途中) なら false。
     function refreshBall(timestep) {
         simTimeMs += timestep;
+        lastBallTimestepMs = timestep;
         let cur = null;
         if (dribbleInfo.id != -1) {
             cur = heldBallScenePosition();

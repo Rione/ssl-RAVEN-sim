@@ -196,7 +196,7 @@ void Robot::resetMotion() {
 
 // 指令 (cmd*) から実際に台へ与える速度 (veltangent/velnormal/velangular) までを
 // 1 tick 進める。実機の同定モデルの順で効かせる:
-//   むだ時間 → 回転の不感帯 → 定常ゲイン → 角速度上限 → 並進の速さの上限 → 車輪周速の予算 → 一次遅れ → 軸別の加減速上限
+//   むだ時間 → 回転の不感帯 → 定常ゲイン → 角速度上限 → 並進の速さの上限 → 車輪周速の予算 → 一次遅れ → 合成または軸別の加減速上限
 // 既定のモデル (設定なし) では素通しになる。
 void Robot::advanceActuation(float dtSec) {
     if (dtSec <= 0.0f) {
@@ -230,10 +230,28 @@ void Robot::advanceActuation(float dtSec) {
     }
     applyWheelSpeedBudget(targetX, targetY, targetW);
 
-    appliedTangent = advanceAxis(appliedTangent, targetX, model.tauVxSec,
-                                 model.tractionAccelXMmS2, model.tractionDecelXMmS2, dtSec);
-    appliedNormal = advanceAxis(appliedNormal, targetY, model.tauVySec,
-                                model.tractionAccelYMmS2, model.tractionDecelYMmS2, dtSec);
+    if (model.maxLinearAccelMmS2 > 0 && model.maxLinearDecelMmS2 > 0) {
+        // 一次遅れの行き先まで速度空間の直線上を進む。速さの最小点で減速→加速を切り替え、
+        // 反転や90度の方向転換でも、減速の大きい上限を反転後の加速へ流用しない。
+        const float nx = advanceAxis(appliedTangent, targetX, model.tauVxSec, 0, 0, dtSec);
+        const float ny = advanceAxis(appliedNormal, targetY, model.tauVySec, 0, 0, dtSec);
+        const float dx = nx - appliedTangent, dy = ny - appliedNormal;
+        const float distance = std::hypot(dx, dy);
+        if (distance > 0) {
+            const float ux = dx / distance, uy = dy / distance;
+            const float braking = std::clamp(-(appliedTangent * ux + appliedNormal * uy), 0.0f, distance);
+            const float brakeStep = std::min(braking, model.maxLinearDecelMmS2 * dtSec);
+            const float remaining = std::max(0.0f, dtSec - brakeStep / model.maxLinearDecelMmS2);
+            const float step = brakeStep + std::min(distance - brakeStep, model.maxLinearAccelMmS2 * remaining);
+            appliedTangent += ux * step;
+            appliedNormal += uy * step;
+        }
+    } else {
+        appliedTangent = advanceAxis(appliedTangent, targetX, model.tauVxSec,
+                                     model.tractionAccelXMmS2, model.tractionDecelXMmS2, dtSec);
+        appliedNormal = advanceAxis(appliedNormal, targetY, model.tauVySec,
+                                    model.tractionAccelYMmS2, model.tractionDecelYMmS2, dtSec);
+    }
     appliedAngular = advanceAxis(appliedAngular, targetW, model.tauOmegaSec,
                                  model.maxAngularAccelRadS2, model.maxAngularAccelRadS2, dtSec);
 
