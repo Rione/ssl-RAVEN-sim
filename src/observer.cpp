@@ -5,11 +5,22 @@
 #include <QDir>
 
 namespace {
-QString configFilePath() {
+// 起動の引数 --config で選んだ設定ファイル (絶対の道)。空なら既定のファイル。
+QString chosenConfigFilePath;
+}
+
+QString Observer::defaultConfigFilePath() {
     const QDir projectDir(QDir::cleanPath(
         QDir(QCoreApplication::applicationDirPath()).filePath("../..")));
     return projectDir.filePath("config/config_v2.ini");
 }
+
+void Observer::setConfigFilePath(const QString &path) {
+    chosenConfigFilePath = path;
+}
+
+QString Observer::configFilePath() {
+    return chosenConfigFilePath.isEmpty() ? defaultConfigFilePath() : chosenConfigFilePath;
 }
 
 Observer::Observer(QObject *parent) : QObject(parent), config(configFilePath(), QSettings::IniFormat) {
@@ -81,6 +92,17 @@ Observer::Observer(QObject *parent) : QObject(parent), config(configFilePath(), 
                                         static_cast<unsigned short>(feedbackPort));
 
     loadRobotModels();
+
+    // --- 捕る・蹴るの機体の能力 ---
+    dribblerCatchMaxSpeedMmS = config.value("Physics/DribblerCatchMaxSpeedMmS", 1500.0).toFloat();
+    kickerRechargeSec = config.value("Physics/KickerRechargeSec", 1.0).toFloat();
+    // 蹴りの初速の上限 [m/s]。チップは 3 次元の速さ。0 以下は上限なし。
+    const float maxStraightKickMmS = config.value("Physics/MaxLinearKickSpeed", 10.0).toFloat() * 1000.0f;
+    const float maxChipKickMmS = config.value("Physics/MaxChipKickSpeed", 10.0).toFloat() * 1000.0f;
+    for (int i = 0; i < MaxRobots; ++i) {
+        blueRobots[i]->setKickLimits(maxStraightKickMmS, maxChipKickMmS);
+        yellowRobots[i]->setKickLimits(maxStraightKickMmS, maxChipKickMmS);
+    }
 
     // --- 追従診断 ---
     QString diagPath = config.value("Diag/RobotCsvPath", "").toString();
@@ -229,15 +251,26 @@ void Observer::controlReceive(const RobotControl& packet, bool isYellow) {
     else emit blueRobotsChanged();
 }
 
+// 窓の大きさは窓が動くたびに QML (Main.qml の onWidthChanged / onHeightChanged) から届くので、ここでは覚えるだけ。
+// setValue すると QSettings が設定ファイルを丸ごと書き直し、; の注釈と鍵の並びが消える。設定ファイルに書くのは
+// 設定の画面で保存を押したとき (saveWindowSize) だけ。
 void Observer::setWindowWidth(int width) { 
+    if (width == windowWidth) {
+        return;
+    }
     windowWidth = width; 
-    config.setValue("Display/width", width);
     emit settingChanged(); 
 }
 void Observer::setWindowHeight(int height) { 
+    if (height == windowHeight) {
+        return;
+    }
     windowHeight = height; 
-    config.setValue("Display/height", height);
     emit settingChanged(); 
+}
+void Observer::saveWindowSize() {
+    config.setValue("Display/width", windowWidth);
+    config.setValue("Display/height", windowHeight);
 }
 void Observer::setVisionMulticastPort(int port) { 
     visionMulticastPort = port; 

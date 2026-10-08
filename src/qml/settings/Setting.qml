@@ -155,6 +155,7 @@ Item {
                 onClicked: {
                     observer.windowWidth = tempWindowWidth;
                     observer.windowHeight = tempWindowHeight;
+                    observer.saveWindowSize();
                     observer.visionMulticastAddress = tempVisionMulticastAddress;
                     observer.visionMulticastPort = tempVisionMulticastPort;
                     observer.commandListenPort = tempCommandListenPort;

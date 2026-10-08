@@ -97,6 +97,14 @@ current directory, so launching it from anywhere else loads nothing and no
 window appears. The `run` target above already runs in `build/`; to start the
 executable by hand, `cd build` first.
 
+To read a different settings file, pass `--config <file>` (a relative path is
+taken from the current directory; the simulator stops if the file is missing).
+Without it the simulator reads `config/config_v2.ini` (RAVEN's real robots).
+Saving from the settings panel writes to the chosen file.
+`config/config_sumatra.ini` makes every robot what TIGERs' Sumatra assumes, for
+matches against Sumatra: `./bin/m2-Sim --config ../config/config_sumatra.ini`
+(see `docs/robot_motion_model.md`).
+
 Changing QML does **not** require a rebuild: QML is read from disk at startup, so
 edit and restart. Only C++ changes need a rebuild.
 

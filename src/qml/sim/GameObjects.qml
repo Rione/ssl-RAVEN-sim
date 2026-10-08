@@ -33,15 +33,28 @@ Node {
     property real grabOffsetZ: 0
     property real grabLiftHeight: 80
 
-    // Per-robot kicker recharge, in physics frames (1 s at 60 Hz). A kick used to raise ONE global flag that
-    // blocked every robot's kick AND dribbling for 1 s: with an opponent that kicks often, the other team could
-    // hardly ever kick or hold the ball. The kicker capacitor is per robot, and the dribbler is independent of it.
-    property int kickRechargeFrames: 60
-    property var kickCooldown: ({})
-    // A dribbler cannot catch a ball that passes it faster than this (mm/s, relative to the robot). Without
-    // this limit a robot that kicks with its dribbler running re-catches the ball in the launch frame and the
-    // kick is swallowed (the ball is 95 mm in front of it and still inside the hold cone).
-    property real dribbleCatchMaxSpeedMmS: 1500
+    // キッカーの再充電 [s] ([Physics] KickerRechargeSec)。蹴ってからこの時間は、その台は次を蹴れない。
+    // コンデンサは台ごとにあり、ドリブラはキッカーと別の装置なので、再充電のあいだも捕れる。
+    property real kickRechargeSec: observer.kickerRechargeSec
+    // 台ごとの次に蹴れる時刻 [simTimeMs] (キー "b3" / "y0")。
+    property var kickReadyAtMs: ({})
+    // 蹴った球がまだ口の窓の中にある台 (キー "b3" / "y0")。蹴った刻みでは球はまだ口の前にあり、
+    // 放っておくと回したままのドリブラが吸い戻して蹴りが消える。その球は口から離れていく途中なので、
+    // 窓を出るまで、その台は捕らないし蹴り直さない。
+    property var kickedBallInMouth: ({})
+    // 機体に対する球の速さがこれ以上だとドリブラは捕れない [mm/s] ([Physics] DribblerCatchMaxSpeedMmS)。
+    property real dribbleCatchMaxSpeedMmS: observer.dribblerCatchMaxSpeedMmS
+    // 捕れない速さで口の窓に入った球のある台 (キー "b3" / "y0")。その球は口に当たって跳ね返る。当たった
+    // ところで勢いが吸われて遅く跳ね返ることがあり、それを捕らせると速さの上限が効かない。捕れるか
+    // どうかは窓に入ってきたときの速さで決め、窓を出るまでは捕らない (蹴るのはよい: ダイレクトで蹴り返す)。
+    property var bouncedBallInMouth: ({})
+    // 1 つ前の刻みの球の速度。球が機体に当たった刻みの差分は、ぶつかる前と跳ね返った後をまたぐので
+    // 小さく出る。ぶつかる前の速さも見て、速く飛び込んだ球を当たった刻みに捕ったことにしない。
+    property var ballVelocityBefore: Qt.vector4d(0, 0, 0, 0)
+    // 直近の刻みの球の速度 (新しい順、今の刻みを含めて recentBallVelocityCount 個)。板に当たった刻みと、その次の
+    // 刻みの差分は跳ね返りをまたぐ。どの刻みで窓に入ったと判じても当たる前の速度が残るだけの長さ。
+    property var recentBallVelocities: []
+    readonly property int recentBallVelocityCount: 3
     // Who may act on the ball this frame ({isYellow, id} or null). The ball can sit in several mouth cones at once
     // (a face-to-face contest): a robot asking to kick wins (a kick is instantaneous), otherwise the nearest mouth.
     // If the winner is not the current holder, the hold is released so the winner can dribble or kick the ball.
@@ -52,24 +65,28 @@ Node {
     // (mm). Without it two facing dribblers swap the ball every frame.
     property real contestTakeoverMarginMm: 30
     property var pendingKickVelocity: null
-    property var preBallPosition: Qt.vector4d(0, 0, 0, 0)
     property var ballAngularVelocity: Qt.vector4d(0, 0, 0, 0)
     property var preBallAngularPosition: Qt.vector4d(0, 0, 0, 0)
     property var ballVelocity: Qt.vector4d(0, 0, 0, 0)
     property var ballModelNum: 1
     property var ballReset: false
-    // 配置の直後、減速を止めておくフレーム数。ballVelocity は位置の差分なので、
-    // 瞬間移動をまたいだ 1 フレームは出鱈目な速さになる。それを摩擦に食わせないための
-    // 逃げで、必要なのは差分が綺麗になるまでの 2 フレームだけ。
-    // 以前は 30 (= 0.5 s) で、速度つきの配置 (RAVEN のフリーキック・ボール配置) のあいだ
-    // 球が完全に無摩擦で転がっていた。0918 実測: 3000 mm/s で置くと 0.45 s / 1350 mm を
-    // 一切減速せずに直進し、RAVEN の到達予測がそのぶん丸ごと外れていた。
-    property int skipRollingFrictionFrames: 0
-    readonly property int placementSettleFrames: 2
+    // 物理の刻みを足し上げた時刻 [ms]。球の速度は前に見た位置からの差分を、その間の時間で割って出す。
+    property real simTimeMs: 0
+    // 前に見た球の位置 {position, timeMs}。置き直しのときは捨てる (瞬間移動をまたいで差分を取らない)。
+    property var ballPrevSample: null
+    // 置き直しを頼んだが、まだ物理に効いていない球 {position, velocity [mm/s], requestedMs}。reset() は
+    // 次の刻みで効くので、それまで球は前の場所にいる。着いたのを確かめてから、頼んだ速度を球の速度にする。
+    property var ballPlacement: null
+    // 置いた先が機体と重なっていると、押し出されて置いた場所の近くに現れないことがある。そのときは
+    // この時間で着いたものとみなす (reset() が効くのは 1〜2 刻み後なので、それより十分長い)。
+    readonly property real placementLandingTimeoutMs: 250
     // Ball physical constants (scene units are mm). 42 mm diameter, ~46 g golf ball.
     // Mass is in kg, the same unit as the robot bodies (2.5 kg): 46 g is 0.046, not 46.
     property real ballRadius: 21.0
     property real ballMass: 0.046
+    // 機体の質量 (球と同じ kg)。球が板に当たると機体も押し返されるので、材質の反発の平均がそのまま
+    // 見える反発にはならない (botMaterial)。
+    property real robotMass: 2.5
     // Angular velocity of the ball we integrate ourselves (rad/s). PhysX does not expose
     // a readable angular velocity, and the field has no contact friction, so the slip/roll
     // friction model owns the ball's spin. See applyBallFriction().
@@ -161,7 +178,7 @@ Node {
         DynamicRigidBody {
             objectName: "b" + String(index)
             massMode: DynamicRigidBody.MassAndInertiaTensor
-            mass: 2.5
+            mass: robotMass
             inertiaTensor: Qt.vector3d(5000, 5000, 5000)
             linearAxisLock: DynamicRigidBody.LockY
             sendContactReports: true
@@ -191,6 +208,14 @@ Node {
                 ConvexMeshShape {
                     source: "../../../assets/models/ball/meshes/ball.cooked.cvx"
                     position: Qt.vector3d(0, 5000, 0)
+                },
+                // 口の板。メッシュの口の中で球が触れるのは、斜めのチップの板 (法線が上へ 32°) と丸いドリブラ
+                // (法線が下へ 47°) で、球はどちらにも中心から前へ約 85.6 mm で触れる。どちらが先に効くかで球が
+                // 跳ね上がったり床へ押されたりして、板に垂直な跳ね返りが材質の値の半分ほどになっていた。口で球が
+                // 触れるのを垂直な面にする。前の面は、持った球 (中心から 95 mm) が触れる 74 mm。
+                BoxShape {
+                    extents: Qt.vector3d(70, 50, 10)
+                    position: Qt.vector3d(0, 25, -69)
                 }
             ]
             BlueBody.Visualize {
@@ -290,7 +315,7 @@ Node {
         DynamicRigidBody {
             objectName: "y" + String(index)
             massMode: DynamicRigidBody.MassAndInertiaTensor
-            mass: 2.5
+            mass: robotMass
             inertiaTensor: Qt.vector3d(5000, 5000, 5000)
             linearAxisLock: DynamicRigidBody.LockY
             sendContactReports: true
@@ -320,6 +345,11 @@ Node {
                 ConvexMeshShape {
                     source: "../../../assets/models/ball/meshes/ball.cooked.cvx"
                     position: Qt.vector3d(0, 5000, 0)
+                },
+                // 口の板 (青の台の同じ所の注釈を見る)。
+                BoxShape {
+                    extents: Qt.vector3d(70, 50, 10)
+                    position: Qt.vector3d(0, 25, -69)
                 }
             ]
             YellowBody.Visualize {
@@ -426,18 +456,19 @@ Node {
         restitution: observer.ballRestitution
     }
 
-    // ロボットの外装。RAVEN の ball_model.direct_kick を再現するための材質。
-    //   tangent_retention = 1.0 … 接線方向は落ちない → 摩擦 0
-    //   normal_restitution    … 法線方向の反発。PhysX は接触する 2 つの材質の平均を取るので、
-    //                           球もロボットも同じ値を持たせて平均を normal_restitution にする。
-    // 以前は ball 側を壁向けの値 (0.6) のままにして、その平均が 0.8 になる値をここに入れて
-    // いた。式としては合うが、ロボット同士の反発が 1.0 (完全弾性) になる副作用があった。
-    // 壁の跳ね返りは Field.qml の wallMaterial 側で調整する。
+    // ロボットの外装。止まった機体の板で跳ね返った球の、板に垂直な速さの比 (来た速さに対する出た速さ) を
+    // RAVEN の ball_model.direct_kick の normal_restitution (e) にする材質。接線方向は落ちないとみなし、摩擦は 0。
+    //   PhysX は接触する 2 つの材質の反発の平均を、2 つの物の離れる速さ / 近づく速さとして使う。機体は球に
+    //   押し返されるので、球だけを見た比は (e_材·M − m) / (M + m) (M = 機体、m = 球の質量) になる。
+    //   それが e になる e_材 = e·(1 + m/M) + m/M を、球の材質 ([Physics] BallRestitution、壁との跳ね返りの
+    //   ために持っている) との平均で作る: ここ = 2·e_材 − BallRestitution (0〜1 に収まる範囲で)。
+    property real botRestitutionForBall: 2.0 * (observer.ballNormalRestitution * (1.0 + ballMass / robotMass) + ballMass / robotMass)
+                                         - observer.ballRestitution
     PhysicsMaterial {
         id: botMaterial
         staticFriction: 0.0
         dynamicFriction: 0.0
-        restitution: observer.ballNormalRestitution
+        restitution: Math.max(0.0, Math.min(1.0, botRestitutionForBall))
     }
 
     DynamicRigidBody {
@@ -511,10 +542,12 @@ Node {
                     continue;
                 }
                 let key = (isYellow ? "y" : "b") + i;
-                let recharged = !(key in kickCooldown) || kickCooldown[key] <= 0;
-                let wantsKick = recharged && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0);
-                if (!wantsKick && !(color.spinners[i] > 0 && recharged)) {
-                    continue;   // a robot that has just kicked neither kicks nor catches until it recharges
+                if (key in kickedBallInMouth) {
+                    continue;   // the ball it has just kicked is still leaving its mouth
+                }
+                let wantsKick = kickerReady(key) && (color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0);
+                if (!wantsKick && !(color.spinners[i] > 0 && !(key in bouncedBallInMouth))) {
+                    continue;
                 }
                 let isHolder = dribbleInfo.id == i && dribbleInfo.isYellow == isYellow;
                 let effective = isHolder ? d - contestTakeoverMarginMm : d;   // the holder keeps a small edge
@@ -577,8 +610,8 @@ Node {
                     botRadianBall = 0;
                 }
             }
+            let kickKey = (isYellow ? "y" : "b") + i;
             if (botDistanceBall < 110 * Math.cos(Math.abs(botRadianBall)) && Math.abs(botRadianBall) < Math.PI/15.0 && ballPosition.y < 40) {
-                let kickKey = (isYellow ? "y" : "b") + i;
                 let asksKick = color.kickspeeds[i].x != 0 || color.kickspeeds[i].y != 0;
                 if (ballContestWinner !== null && (ballContestWinner.id != i || ballContestWinner.isYellow != isYellow)) {
                     kickDiag(kickKey, asksKick, "contest winner is " + (ballContestWinner.isYellow ? "y" : "b") + ballContestWinner.id);
@@ -593,39 +626,109 @@ Node {
                     continue;
                 }
                 color.holds[i] = true;
-                let recharged = !(kickKey in kickCooldown) || kickCooldown[kickKey] <= 0;
-                if (asksKick && !recharged) {
-                    kickDiag(kickKey, true, "not recharged (" + kickCooldown[kickKey] + " frames left)");
+                let leaving = kickKey in kickedBallInMouth;
+                let ready = kickerReady(kickKey);
+                if (asksKick && !ready && !leaving) {
+                    kickDiag(kickKey, true, "kicker recharging (" + Math.round(kickReadyAtMs[kickKey] - simTimeMs) + " ms left)");
                 }
-                let relVx = (ballVelocity.x - color.velocities[i].x) * 1000.0;   // m/s -> mm/s
-                let relVz = (ballVelocity.z - color.velocities[i].z) * 1000.0;
-                let catchable = Math.hypot(relVx, relVz) < dribbleCatchMaxSpeedMmS
+                let relSpeed = Math.max(
+                        ballSpeedRelativeToBody(ballVelocity, color, i, frame),
+                        ballSpeedRelativeToBody(ballVelocityBefore, color, i, frame));
+                let catchable = relSpeed < dribbleCatchMaxSpeedMmS
                         || (dribbleInfo.id == i && dribbleInfo.isYellow == isYellow);   // already held: keep it
-                if (recharged && asksKick) {
-                    kickCooldown[kickKey] = kickRechargeFrames;
+                if (!catchable) {
+                    bouncedBallInMouth[kickKey] = true;
+                }
+                if (leaving) {
+                    // the ball it has just kicked is on its way out of the mouth
+                } else if (ready && asksKick) {
+                    kickReadyAtMs[kickKey] = simTimeMs + kickRechargeSec * 1000.0;
+                    kickedBallInMouth[kickKey] = true;
                     // wall-clock ms so the line can be matched to RAVEN's MCAP (log_time) without guessing from positions
                     console.log("[kick] " + kickKey + " fires " + Math.round(color.kickspeeds[i].x) + "/" + Math.round(color.kickspeeds[i].y) + " mm/s at ball ("
                             + Math.round(ballPosition.x) + ", " + Math.round(ballPosition.z) + ") t=" + Date.now());
-                    control.kick(color, frame, i, color.poses[i].w, ballVelocity);
-                } else if (color.spinners[i] > 0 && catchable && recharged) {
-                    // recharged: a robot that has just kicked does not re-catch the ball it launched (the body's reset
-                    // lands one frame later and the mouth test passes meanwhile; the ball is gone for real).
-
+                    // Scale a copy: kickspeeds[] holds the command, which stays latched until the next packet.
+                    let launch = directKickVelocity(color, i, frame,
+                                                    color.kickspeeds[i].x * observer.kickerFriction,
+                                                    color.kickspeeds[i].y * observer.kickerFriction);
+                    control.kick(color, frame, i, color.poses[i].w, launch);
+                } else if (color.spinners[i] > 0 && !(kickKey in bouncedBallInMouth)) {
                     control.dribble(frame, isYellow, i, botRadianBall, botDistanceBall, color);
                 }
             } else {
-                if (color.holds[i] == true) {
-                    dribbleInfo.id = -1;
-                    if (ball.position.x > 50000) {
-                        ball.reset(Qt.vector3d(frame.position.x + (95 * Math.cos(-color.poses[i].w)), 25, (frame.position.z + (95 * Math.sin(-color.poses[i].w)))), Qt.vector3d(0, 0, 0));
-                    }
-                }
+                // The mouth window is empty. The holder never gets here (its window test is forced to pass above), so
+                // leave the ball and dribbleInfo alone: a robot whose holds[] is still true from the previous frame
+                // would otherwise cancel a catch another robot made earlier in this same frame.
+                delete kickedBallInMouth[kickKey];
+                delete bouncedBallInMouth[kickKey];
                 if (frame.collisionShapes[5].position.y < 5000) {
                     frame.collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
                 }
                 color.holds[i] = false;
             }
         }
+    }
+
+    // 機体の上で球と重なる点の速度 [mm/s、シーンの軸 (x, z) を vector2d の (x, y) に]。機体を動かしている速度
+    // (この刻みに与えた速度、機体の軸の mm/s と rad/s) の並進に、回転の ω × r を足す。20 rad/s で回る機体の口
+    // (中心から 95 mm) は横に 1.9 m/s で動いている。姿勢の差分から作ると、球に当たった刻みだけ PhysX の接触の
+    // 解き方で 3〜5 割落ちる。向きは vision と同じく上から見て反時計回りが正で、シーンの z は vision の y の符号違い。
+    function bodyPointVelocity(color, i, frame) {
+        let w = color.poses[i].w;
+        let drive = color.preVelocities[i];
+        let vx = drive.x * Math.cos(w) - drive.y * Math.sin(w);
+        let vz = -(drive.x * Math.sin(w) + drive.y * Math.cos(w));
+        let rx = ballPosition.x - frame.position.x;
+        let rz = ballPosition.z - frame.position.z;
+        return Qt.vector2d(vx + drive.z * rz, vz - drive.z * rx);
+    }
+
+    // 球の速度 (シーンの軸の mm/ms = m/s) と、機体の上で球と重なる点の速度との差の大きさ [mm/s]。
+    function ballSpeedRelativeToBody(ballVel, color, i, frame) {
+        let p = bodyPointVelocity(color, i, frame);
+        return Math.hypot(ballVel.x * 1000.0 - p.x, ballVel.z * 1000.0 - p.y);
+    }
+
+    // 口の板で蹴られた球の速度 [mm/s、シーンの軸]。RAVEN の ball_model.direct_kick と同じ形を、動く機体に広げたもの。
+    // 板の座標 (法線 f = 機体の向き、接線 = 機体の左) で、板のその点に対する来た球の速度を分け、
+    //   出る球 = 板の点の速度 + (−e·v_n + v_k)·f + (t·v_t)·接線      (v_n < 0 は板へ向かう速さ)
+    // e = [BallModel] DirectKickNormalRestitution、t = DirectKickTangentRetention、v_k は蹴りの前への速さ。
+    // 球が板へ向かっていない (持っている・止まっている・離れていく) ときの法線の成分は v_k と今の速さの大きい方なので、
+    // 止まった台が止まった球や持った球を蹴れば、出るのは蹴りの速さそのもの。上への蹴り (チップ) は板に沿う向きなので
+    // そのまま上向きの速さになる。kickForward / kickUp [mm/s] は機体の前・上への蹴りの速さ。
+    function directKickVelocity(color, i, frame, kickForward, kickUp) {
+        let w = color.poses[i].w;
+        let fx = Math.cos(w);
+        let fz = -Math.sin(w);
+        let tx = -Math.sin(w);
+        let tz = -Math.cos(w);
+        let point = bodyPointVelocity(color, i, frame);
+        let px = point.x;
+        let pz = point.y;
+        // 窓に入ったと判じた刻みの差分は、PhysX が先に跳ね返した後の速度になっていることがある。持っていないなら、
+        // 直近の刻みのうち板へ最も強く向かっていたものを来た速度にする。持っている球は口に吸われているので今の速度だけ。
+        let holder = dribbleInfo.id == i && dribbleInfo.isYellow == (color === yellow);
+        let samples = holder || recentBallVelocities.length == 0 ? [ballVelocity] : recentBallVelocities;
+        let relN = 0;
+        let relT = 0;
+        for (let k = 0; k < samples.length; k++) {
+            let vx = samples[k].x * 1000.0 - px;
+            let vz = samples[k].z * 1000.0 - pz;
+            let n = vx * fx + vz * fz;
+            if (k == 0 || n < relN) {
+                relN = n;
+                relT = vx * tx + vz * tz;
+            }
+        }
+        let e = observer.ballNormalRestitution;
+        let t = observer.ballTangentRetention;
+        let outN = relN < 0 ? -e * relN + kickForward : Math.max(relN, kickForward);
+        let outT = t * relT;
+        return Qt.vector3d(px + outN * fx + outT * tx, kickUp, pz + outN * fz + outT * tz);
+    }
+
+    function kickerReady(key) {
+        return !(key in kickReadyAtMs) || simTimeMs >= kickReadyAtMs[key];
     }
 
     // Diagnostics: a robot with the ball in its mouth asked to kick but could not. Logged at most once per second per robot.
@@ -642,15 +745,49 @@ Node {
         }
     }
 
+    // この刻みの物理の結果から球の位置 (ballPosition) と速度 (ballVelocity) を取る。機体の姿勢は
+    // botMovement がこの刻みの結果を読むので、球も同じ刻みに揃える。前のフレームで Sync が出した
+    // 位置を使うと球だけ 1 刻み古くなり、速度も別の刻みの長さで割ることになる。刻みは 14〜16.7 ms で
+    // 揺れるので速さが 2 割ほど揺れ、その揺れが蹴り出しの速さ v0 を押し上げて滑り → 転がりの切り替えを早める。
+    // 球の状態がこの刻みで決まらない (置き直しが効く前・持っていた球を口へ戻す途中) なら false。
+    function refreshBall(timestep) {
+        simTimeMs += timestep;
+        let cur = null;
+        if (dribbleInfo.id != -1) {
+            cur = heldBallScenePosition();
+        } else if (Math.abs(ball.position.x) < 50000 && Math.abs(ball.position.z) < 50000) {
+            cur = ball.position;
+        }
+        if (cur === null) {
+            return false;
+        }
+        let p = Qt.vector4d(cur.x, cur.y, cur.z, 0);
+        if (ballPlacement !== null) {
+            let v = ballPlacement.velocity;
+            // 着いた後の刻みで頼んだ速度ぶん進んでいてもよい。
+            let tolerance = 5.0 + Math.hypot(v.x, v.z) * 0.05;
+            let landed = Math.hypot(p.x - ballPlacement.position.x, p.z - ballPlacement.position.z) <= tolerance;
+            if (!landed && simTimeMs - ballPlacement.requestedMs < placementLandingTimeoutMs) {
+                return false;
+            }
+            ballVelocity = Qt.vector4d(v.x / 1000.0, v.y / 1000.0, v.z / 1000.0, 0);
+            ballVelocityBefore = ballVelocity;
+            ballPlacement = null;
+            recentBallVelocities = [ballVelocity];
+        } else if (ballPrevSample !== null && simTimeMs > ballPrevSample.timeMs) {
+            ballVelocityBefore = ballVelocity;
+            ballVelocity = mu.calcVelocity(p, ballPrevSample.position, simTimeMs - ballPrevSample.timeMs);
+            recentBallVelocities = [ballVelocity].concat(recentBallVelocities).slice(0, recentBallVelocityCount);
+        }
+        ballPosition = p;
+        ballPrevSample = { position: p, timeMs: simTimeMs };
+        return true;
+    }
+
     function updateGameObjects(timestep) 
     {
         diagFrame++;
-        for (let key in kickCooldown) {
-            if (kickCooldown[key] > 0) {
-                kickCooldown[key]--;
-            }
-        }
-        ballVelocity = mu.calcVelocity(ballPosition, preBallPosition, timestep);
+        let ballKnown = refreshBall(timestep);
         ballAngularVelocity = mu.calcVelocity(ball.eulerRotation, preBallAngularPosition, timestep);
         let teleopSpeed = Math.sqrt(teleopVelocity.x * teleopVelocity.x
                                     + teleopVelocity.y * teleopVelocity.y
@@ -673,16 +810,15 @@ Node {
             ballSpin = Qt.vector3d(0, 0, 0);
             ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
             pendingKickVelocity = null;
+            // この刻みで測った速度は蹴る前のもの。摩擦に食わせると止まった球として扱われる。
+            ballKnown = false;
         }
-        if (skipRollingFrictionFrames > 0)
-            skipRollingFrictionFrames--;
         // Friction: a no-spin kick slides (kinetic friction decelerates + spins it up),
         // then rolls (rolling resistance slowly bleeds off the rest), so it doesn't roll
         // forever off the field (and escape past the boundary walls into huge vision
         // coordinates).
-        if (!teleopActive && skipRollingFrictionFrames == 0)
+        if (!teleopActive && ballKnown)
             applyBallFriction(ball, ballVelocity, timestep);
-        preBallPosition = ballPosition;
         preBallAngularPosition = ball.eulerRotation;
         ballReset = true;
         
@@ -736,7 +872,7 @@ Node {
         let dt = timestep > 1.0 ? timestep / 1000.0 : timestep;   // ms -> s (fixed 1/60 s)
         let R = ballRadius;
 
-        // calcVelocity() reports mm-per-(frame ms), which is numerically m/s; convert to
+        // calcVelocity() reports mm-per-ms, which is numerically m/s; convert to
         // the scene's mm/s so it is consistent with R (mm) and the decelerations (mm/s^2).
         let vx = linearVelocity.x * 1000.0;
         let vz = linearVelocity.z * 1000.0;
@@ -867,8 +1003,12 @@ Node {
         }
         ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
         ballPosition = Qt.vector4d(ball.position.x, ball.position.y, ball.position.z, 0);
-        preBallPosition = ballPosition;
-        skipRollingFrictionFrames = placementSettleFrames;
+        ballPrevSample = null;
+        recentBallVelocities = [];
+        kickedBallInMouth = ({});
+        bouncedBallInMouth = ({});
+        ballPlacement = { position: scenePosition, velocity: velocity !== null ? velocity : Qt.vector3d(0, 0, 0),
+                          requestedMs: simTimeMs };
         // Release the dribbler hold too: while dribbleInfo points at a robot, botMovement() forces
         // that robot's ball distance/angle to "held" and the next dribble() would snap the ball
         // back onto its dribbler, so a placement could never take the ball away from a holder.

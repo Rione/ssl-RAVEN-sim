@@ -17,8 +17,10 @@ sim の台が指令どおり即座に動き、球が別の落ち方をしてい�
 | 段 | 設定キー | RAVEN の yaml |
 |---|---|---|
 | むだ時間 | `DeadTimeSec` | `robot.input_dead_time_sec` |
+| 回転の不感帯（これ未満の角速度の指令は 0。0 は不感帯なし） | `OmegaDeadZoneRadS` | — |
 | 定常ゲイン | `GainVx` `GainVy` `GainVxFromUy` `GainVyFromUx` | `robot.gain_vx` `gain_vy` `gain_vx_from_uy` `gain_vy_from_ux` |
 | 角速度の上限 | `MaxAngularVelRadS` | `robot.max_angular_velocity` |
+| 並進の速さの上限 (0 は上限なし) | `MaxLinearVelMmS` | — |
 | 車輪周速の予算 | `WheelRimSpeedBudgetMmS` | `robot.wheel_rim_speed_budget_mm_s` |
 | 一次遅れ | `TauVxSec` `TauVySec` `TauOmegaSec` | `robot.tau_vx` `tau_vy` `tau_omega` |
 | 軸別の牽引限界 | `TractionAccelXMmS2` `TractionAccelYMmS2` `TractionDecelXMmS2` `TractionDecelYMmS2` | `robot.traction_accel_x/y_mm_s2` `traction_decel_x/y_mm_s2` |
@@ -103,14 +105,104 @@ sim もそれに従う。v0 は `ballLaunchSpeed` が持ち、キック・速度
 （`initialSpeedFor`）も到達時刻（`arrivalTime`）も到達速度（`speedAfterTravel`）も
 この 3 つの数から引いているので、ここがずれると「ここで受け取れる」が毎回外れる。
 
-跳ね返りは PhysX の材質で入れる。PhysX は接触する 2 つの材質を平均するので、
-ロボット側（`botMaterial`）の反発係数は `2·DirectKickNormalRestitution − BallRestitution`
-にしてある。`tangent_retention = 1.0` は「接線方向は落ちない」なので、球とロボットの
-摩擦はどちらも 0。地面の接線力は `applyBallFriction()` が丸ごと持っているため、
-球の材質の摩擦も 0（PhysX 側にも摩擦があると滑走相が二重に減速する）。
+### 口の板（`DirectKickNormalRestitution` = e、`DirectKickTangentRetention` = t）
+
+機体の向きを板の法線 f、その左を板に沿う向きとする。
+
+- **蹴らないときの跳ね返り**は PhysX の材質で入れる。口には垂直な板（`BoxShape`、前の面は中心から 74 mm）を
+  置いてあり、球はそこに当たる。止まった機体の板で跳ね返った球の、板に垂直な速さの比が e になるよう、
+  ロボット側（`botMaterial`）の反発を決める。PhysX は 2 つの材質の反発の平均を「2 つの物の離れる速さ / 近づく速さ」に
+  使い、機体 (M = 2.5 kg) も球 (m = 0.046 kg) に押し返されるので、球だけを見た比は (e_材·M − m) / (M + m)。
+  そこで e_材 = e·(1 + m/M) + m/M とし、球の材質（`BallRestitution`、壁との跳ね返りのため）との平均が
+  e_材 になるよう `botMaterial` = 2·e_材 − `BallRestitution`（0〜1 に収まる範囲。e が小さく
+  `BallRestitution` が大きいと届かない）。摩擦は球・ロボットとも 0 なので、沿う成分は落ちない（t は使わない）。
+- **蹴ったとき**は `directKickVelocity()` が球の速度を直接決める。板のその点の速度 p（機体の並進 + 回転の ω×r）に
+  対する来た球の速度を、垂直の成分 v_n（板へ向かうと負）と沿う成分 v_t に分け、
+  `出る球 = p + (−e·v_n + v_k)·f + t·v_t·(左)`。v_k は蹴りの前への速さ（指令を `MaxLinearKickSpeed` /
+  `MaxChipKickSpeed` で押さえ、`KickerFriction` を掛けたもの）、チップの上への速さはそのまま上向き。
+  来た速度は直近 3 刻みのうち板へ最も強く向かっていたもの（窓に入ったと判じた刻みでは、PhysX がもう跳ね返して
+  いることがある）。球が板へ向かっていない（持っている・止まっている・離れていく）ときの垂直の成分は v_k と
+  今の速さの大きい方なので、止まった機体が止まった球や持った球を蹴れば、出るのは蹴りの速さそのもの。
+  RAVEN の `Rebound`（`出る球 = (v_k + e·v_n)·f + (t·v_t)·n`）を、動く機体に広げた形。
+- 鍵が無いときは e = 0.8・t = 1.0（RAVEN の既定）。
+
+球の材質の摩擦も 0。地面の接線力は `applyBallFriction()` が丸ごと持っているため
+（PhysX 側にも摩擦があると滑走相が二重に減速する）。
 
 設定パネルの `Ball Slide Decel` / `Ball Roll Decel` がこの 2 つの減速度。
 （以前の `Ball Dynamic Friction` / `Rolling Friction` は係数だったので、置き換えた。）
+
+## Sumatra の前提に揃える（`config/config_sumatra.ini`）
+
+TIGERs の Sumatra は sim に機体の能力を送らず、自分の表（Sumatra の
+`config/botParamsDatabase.json` の `"Simulation"`）で計画する。sim の機体がそれより弱いと、
+Sumatra の計画が sim の都合で外れる。Sumatra と試合をさせるときは、両チームの機体をこの表に揃える。
+
+その設定は `config/config_sumatra.ini` に分けてあり、`config/config_v2.ini`（RAVEN の実機の機体）は
+そのまま。sim を起動するときに `--config` で選ぶ:
+
+```bash
+cd build
+./bin/m2-Sim --config ../config/config_sumatra.ini
+```
+
+- `--config` が無ければ今までどおり `config/config_v2.ini` を読む。
+- 相対の道は、今いるディレクトリから数える。ファイルが無ければ起動しない。
+- 起動の最初に `[config] <読んだファイル>` を出す。
+- 設定の画面で保存すると、選んだファイルに書く。
+
+`config_sumatra.ini` は表から作る（手で直さない）:
+
+```bash
+python3 tools/gen_robot_models.py --model sumatra --write-ini
+```
+
+`config_v2.ini` を元に、`[RobotModel*]`・`[Physics]` の蹴る捕るの鍵・`[BallModel]`・つなぎ方
+（`[Encoder]` の `Team`・`[Network]` の `yellowTeamControlPort`）を表の値で書き換えて
+`config_sumatra.ini` に書く。`config_v2.ini` には触らない。ほかの行は `config_v2.ini` のまま写すので、
+`config_v2.ini` の窓・場・口の設定を直したら書き直す。`[RobotModel.<id>]` は消し、全番号・両チーム共通の
+`[RobotModel]` 1 つにする。値と出どころは `tools/gen_robot_models.py` の `SUMATRA_*` と ini の注釈。
+
+| 項目 | 値 | Sumatra |
+|---|---|---|
+| むだ時間・一次遅れ・ゲイン・回転の不感帯 | 0・0・1・0 | 遅れとゲインの項が無い（指令どおりに動く台） |
+| 加速 / 減速 | 3500 / 6000 mm/s²（前後・横とも） | `accMaxFast` / `brkMax` |
+| 並進の速さの上限 | 4000 mm/s | `velMaxFast` |
+| 角速度 / 角加速度 | 20 rad/s / 50 rad/s² | `velMaxW` / `accMaxW` |
+| 車輪周速の予算 | 0（なし） | 並進と回転を別々に縛るだけ |
+| 蹴りの初速の上限 | ストレート 7.5 m/s・チップ 5.5 m/s（3 次元） | `maxAbsoluteStraightVelocity` / `maxAbsoluteChipVelocity` |
+| キッカーの再充電 | 0 s | sim の機体はいつも満充電 |
+| 捕れる相対速度 | 4000 mm/s | パスの受け側は最大 3.2 m/s |
+| 球の減速 | 滑り −3000・転がり −260・切り替え 0.64 | `BallParameters`（sim の geometry は球のモデルを送らない） |
+| 口の板の反発 / 沿う成分の保持 | 0.55 / 0.35（実機の板は 0.47 / 1.0） | `BallParameters` の `redirectRestitutionCoefficient` / `redirectSpinFactor` の SIMULATOR（止めずに蹴る計画は `ConstantLossRedirectConsultant`） |
+
+蹴る・捕るの鍵（`[Physics]`、鍵が無いときの既定は括弧内）:
+
+- `DribblerCatchMaxSpeedMmS`（1500）… 口の窓に入ってきたときの、機体の上で球と重なる点に対する
+  球の速さがこれ未満なら捕れる。これ以上で入った球は跳ね返り、窓を出るまで捕れない（蹴るのはよい）。
+- `KickerRechargeSec`（1）… 蹴ってから次を蹴れるまで。ドリブラは止めない。
+  蹴った球は、口の窓を出るまでその台が捕らず蹴り直さない（こちらは時間でなく窓が空いたかで決まる）。
+- `MaxLinearKickSpeed` / `MaxChipKickSpeed`（10 m/s）… 両方の指令の口（mocSim と
+  ssl-simulation-protocol）に同じく掛かる。
+- `KickerFriction`（0.8）… 蹴りの初速に掛ける係数。
+
+つなぎ方（RAVEN が黄・Sumatra が青で試合をさせるとき）:
+
+- `[Network]` の `yellowTeamControlPort` は 10399。Sumatra は青で動いても黄に速度 0 を 10302 へ送ってくるので、
+  その指令はどこにも受けない口に向けて捨てる。黄は RAVEN が mocSim（`commandListenPort`）で動かす。
+- `[Encoder]` の `Team` は `yellow`。車輪・口のセンサの返りは RAVEN が動かす黄の機体のものを送る。
+
+sim がこの設定どおりに動くかは、sim を 1 つ起動して vision で測る（RAVEN も Sumatra も要らない）:
+
+```bash
+python3 tools/measure_sim_spec.py --exe build/bin/m2-Sim --config config/config_sumatra.ini
+```
+
+RAVEN 側の台の模型（`system_model_sim_ID<n>.yaml`）も同じ表から出す:
+`python3 tools/gen_robot_models.py --model sumatra --write-raven <ssl-RAVEN>/app/config`。
+RAVEN の `SimRobotModelCoverageTest` は隣の sim の `config_v2.ini` の `[RobotModel.<id>]` と照合し、
+`config_sumatra.ini` は見ない。RAVEN の sim 用の模型が ID 2 の基準と同じことも確かめているので、
+Sumatra の表で生成した RAVEN の模型はそこで落ちる。
 
 ## 検証の入口
 
@@ -129,9 +221,5 @@ sim もそれに従う。v0 は `ballLaunchSpeed` が持ち、キック・速度
 
 ## 未解決
 
-- **ボールがロボットの口に正面から入ったときの跳ね返りが 0.8 にならない。**
-  0918 実測: 3000 mm/s でロボットへ撃つと、跳ね返りは 0.41 相当。材質は
-  球・ロボットとも `DirectKickNormalRestitution` (0.8) なので、PhysX の平均としては
-  0.8 のはず。口のドリブラ／取り合いの判定が噛んでいる可能性が高く、材質の問題とは
-  切り分けられていない。側面に当てたときの値は未計測。
+- 機体の側面（口の板の外）に当てたときの跳ね返りは測っていない。材質は口の板と同じ。
 - 転がり相の −数 % の余分な減速（上記）。
