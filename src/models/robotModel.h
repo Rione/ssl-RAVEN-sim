@@ -34,8 +34,13 @@ struct RobotMotionModel {
     float gainVy = 1.0f;
     float gainVxFromUy = 0.0f;
     float gainVyFromUx = 0.0f;
-    // 角速度のゲイン。RAVEN の yaml には対応する項が無いので既定 1.0。
+    // 角速度のゲイン (yaml: gain_omega)。既定 1.0。
     float gainOmega = 1.0f;
+
+    // 角速度指令の不感帯 [rad/s]。これ未満の指令では回らない。
+    // 0917 実機 id 2 は 0.1〜0.4 rad/s の指令でほぼ回らなかった。追従器はその穴を
+    // 向き誤差の積分で埋める。穴の無い台では積分が足した分がそのまま出て、向きが行き過ぎて戻る。
+    float omegaDeadZoneRadS = 0.0f;
 
     // 機体軸ごとの牽引 (トラクション) 限界 [mm/s^2]
     // (yaml: traction_accel_x / traction_accel_y / traction_decel_x / traction_decel_y)。

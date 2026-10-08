@@ -98,13 +98,12 @@ Observer::Observer(QObject *parent) : QObject(parent), config(configFilePath(), 
     }
 
     // --- Ball model (RAVEN の BallSpeedModel と同じ 2 段一定減速) ---
-    // RAVEN 側は system_model の ball_model で持っていて、パスの初速逆算も到達時刻の
-    // 予測もすべてこの 3 つから引いている (common/physics/BallPhysics)。sim が別の
-    // パラメータ化 (摩擦係数) で転がしていると、RAVEN の「ここで受け取れる」が
-    // 外れ続ける。既定値は 0917 の実測同定値。
-    ballSlideDecelMmS2 = std::fabs(config.value("BallModel/AccSlideMmS2", 2159.324207613644).toFloat());
-    ballRollDecelMmS2 = std::fabs(config.value("BallModel/AccRollMmS2", 213.609470182153).toFloat());
-    ballSwitchRatio = config.value("BallModel/KSwitch", 2.0 / 3.0).toFloat();
+    // RAVEN 側は system_model_sim.yaml の ball_model で持っていて、パスの初速逆算も到達時刻の
+    // 予測もすべてこの 3 つから引いている。sim が別の数で転がしていると、RAVEN の
+    // 「ここで受け取れる」が外れ続ける。鍵が無いときの既定は、その ball_model と同じ数。
+    ballSlideDecelMmS2 = std::fabs(config.value("BallModel/AccSlideMmS2", 5675.0).toFloat());
+    ballRollDecelMmS2 = std::fabs(config.value("BallModel/AccRollMmS2", 297.0).toFloat());
+    ballSwitchRatio = config.value("BallModel/KSwitch", 0.54).toFloat();
     ballNormalRestitution = config.value("BallModel/DirectKickNormalRestitution", 0.8).toFloat();
     ballTangentRetention = config.value("BallModel/DirectKickTangentRetention", 1.0).toFloat();
     // NOTE: no wall-clock simulation timer. Vision/actuation/feedback are driven
