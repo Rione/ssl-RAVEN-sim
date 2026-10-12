@@ -67,6 +67,15 @@ QtObject {
 
 
     function updateID(color, frame, i, botIDTexts, botStatus, botIDRect, botBar) {
+        // 場から出した台 (場の外の置き場に居る) は番号の札を出さない
+        let shown = !robotNode.isParked(frame);
+        botIDTexts.children[i].visible = shown;
+        botIDRect.children[i].visible = shown;
+        botStatus.children[i].visible = shown;
+        botBar.children[i].visible = shown;
+        if (!shown) {
+            return;
+        }
 
         let frame2D = camera.projectToScreen(
             Qt.vector3d(frame.position.x-15, frame.position.y + 128, frame.position.z-86.5), overviewCamera.position, overviewCamera.forward, overviewCamera.up, window.width, window.height, overviewCamera.fieldOfView, 1.0, 20000

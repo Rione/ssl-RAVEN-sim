@@ -19,6 +19,7 @@
 #include "models/robotModel.h"
 #include "mocSim_Packet.pb.h"
 #include "ssl_simulation_robot_control.pb.h"
+#include "ssl_simulation_control.pb.h"
 
 class Observer : public QObject {
     Q_OBJECT
@@ -97,6 +98,8 @@ public:
 
     void visionReceive(const mocSim_Packet& packet);
     void controlReceive(const RobotControl& packet, bool isYellow);
+    // SimulatorCommand (ssl-simulation-protocol) の口。返事 (SimulatorResponse) は送り主へ返す。
+    void simulationControlReceive(const SimulatorCommand &command, const QHostAddress &sender, quint16 senderPort);
 
     QList<QObject*> getBlueRobots() const {
         QList<QObject*> blueList;
@@ -192,6 +195,14 @@ signals:
     // hasVelocity is false when the Replacement didn't set vx/vy (they are optional
     // in mocSim_BallReplacement); sceneVx/sceneVz are only meaningful when true.
     void ballReplacementRequested(float sceneX, float sceneZ, bool hasVelocity, float sceneVx, float sceneVz);
+    // --- SimulatorControl (TeleportRobot) から ---
+    // 台を場から出す (present = false)。QML は持っていた球を口の前に放してから、台を場の外の置き場へ移す。
+    void robotRemovalRequested(int id, bool isYellow);
+    // 台を置き直す (場に戻すときも)。Replacement と違い、持っていた球は放してから置く (ER-Force の sim と同じ)。
+    void robotTeleportRequested(int id, bool isYellow, float sceneX, float sceneZ, float sceneRotYDeg);
+    // 力で動かす (by_force) の始めと終わり。active が false なら終わり。hasPosition / hasHeading が false の量は動かさない。
+    void robotForceMoveRequested(int id, bool isYellow, bool active, bool hasPosition, float sceneX, float sceneZ,
+                                 bool hasHeading, float headingRad);
 
 private:
     QSettings config;
@@ -199,6 +210,7 @@ private:
     VisionReceiver *visionReceiver;
     ControlBlueReceiver *controlBlueReceiver;
     ControlYellowReceiver *controlYellowReceiver;
+    SimulationControlReceiver *simulationControlReceiver;
 
     Sender *sender;
 
@@ -214,6 +226,8 @@ private:
     int commandListenPort;
     int blueTeamControlPort;
     int yellowTeamControlPort;
+    // SimulatorCommand を受ける口 ([Network] simulationControlPort、既定は ssl-simulation-protocol の 10300)
+    int simulationControlPort;
 
     bool forceDebugDrawMode;
     bool lightBlueRobotMode;
@@ -223,6 +237,24 @@ private:
 
     int blueRobotCount;
     int yellowRobotCount;
+
+    // 台が場に居るか (SimulatorControl の present)。番号が台数 (blue/yellowRobotCount) 以上の台は sim に無いので false。
+    // 場から出した台は QML が場の外の置き場へ移し、vision は場の外の物を送らない (sender.cpp) ので映らない。
+    std::array<bool, MaxRobots> bluePresent;
+    std::array<bool, MaxRobots> yellowPresent;
+    // 力で動かしている台 (by_force)。同じ台へ by_force = false の TeleportRobot が来るまで続く。
+    std::array<bool, MaxRobots> blueForceMove;
+    std::array<bool, MaxRobots> yellowForceMove;
+    void resetPresence(bool isYellow);
+    void handleTeleportRobot(const TeleportRobot &teleport, SimulatorResponse &response);
+    void handleTeleportBall(const TeleportBall &teleport, SimulatorResponse &response);
+    void removeRobot(int id, bool isYellow);
+    // 力で動かす (by_force) の始めと終わり。目標は場の座標 (x, y [mm]・向き [rad])
+    void startForceMove(int id, bool isYellow, bool hasPosition, float xMm, float yMm, bool hasHeading, float headingRad);
+    void stopForceMove(int id, bool isYellow);
+    // 台を (x, y [mm], 向き [rad]) へ置き、指令を止めて速度 (vx, vy [mm/s]・angular [rad/s]、場の座標) を与える。
+    void placeRobot(int id, bool isYellow, float xMm, float yMm, float headingRad,
+                    float vxMmS, float vyMmS, float angularRadS);
 
     float ballStaticFriction;
     float ballRestitution;

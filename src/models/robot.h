@@ -63,6 +63,10 @@ public:
     // and the very next simulation tick re-applies it, driving the robot away
     // from the spot it was just placed at.
     void resetMotion();
+    // いま台が出している速度 (台の座標: 前 [mm/s]・左 [mm/s]・回る [rad/s]) を決める。指令は変えないので、次の刻みから
+    // 同定モデルが指令 (resetMotion の後なら 0) へ向けて加減速の上限どおりに落としていく。
+    // SimulatorControl の TeleportRobot の速度 (v_x・v_y・v_angular) をこれで与える。
+    void setAppliedVelocity(float tangentMmS, float normalMmS, float angularRadS);
 
     uint32_t getId() const;
     float getKickspeedx() const;

@@ -23,7 +23,7 @@ C++ 約 1,980 行 / QML 約 3,550 行。**行数でも責務でも QML 側が主
 | パス | 役割 |
 |---|---|
 | `src/observer.*` | 中枢。設定・通信結線・物理刻み連携・エンコーダ合成 |
-| `src/networks/` | UDP 受信 3 クラス・送信 2 クラス |
+| `src/networks/` | UDP 受信 4 クラス (うち 1 つは sim の操作 `SimulatorCommand`)・送信 2 クラス |
 | `src/models/` | Robot の状態と遅延モデル、座標投影 |
 | `src/qml/sim/` | **シミュレーション本体**（物理・キック・摩擦） |
 | `src/qml/settings/` | 設定パネル UI |
