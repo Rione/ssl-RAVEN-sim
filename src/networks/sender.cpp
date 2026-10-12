@@ -112,7 +112,7 @@ void Sender::send(int camera_num, QVector3D ball_position, QList<QVector3D> blue
 void Sender::setDetectionInfo(SSL_DetectionFrame &detection, int camera_id, QVector3D ball_position, QList<QVector3D> blue_positions, QList<QVector3D> yellow_positions) {
     // Do not emit a ball detection with off-field/garbage coordinates
     // (e.g. the dribble "park" sentinel at ~100000). Mirrors ssl-Raven's CamFilter guard.
-    if (std::abs(ball_position.x()) < 20000.0f && std::abs(ball_position.z()) < 20000.0f) {
+    if (inWorld(ball_position.x(), ball_position.z())) {
         SSL_DetectionBall* ball = detection.add_balls();
         ball->set_confidence(1.0);
         ball->set_x(ball_position.x());
@@ -122,7 +122,11 @@ void Sender::setDetectionInfo(SSL_DetectionFrame &detection, int camera_id, QVec
         ball->set_pixel_y(0);
     }
     
+    // 場から出した台 (SimulatorControl の present = false) は場の外の置き場に居るので出さない。
     for (int i = 0; i < blue_positions.size(); ++i) {
+        if (!inWorld(blue_positions[i].x(), blue_positions[i].y())) {
+            continue;
+        }
         // if ((blue_positions[i].x() > 0 && camera_id == 0) || (blue_positions[i].x() < 0 && camera_id == 1)) {
             SSL_DetectionRobot* robot = detection.add_robots_blue();
             robot->set_robot_id(i);
@@ -140,6 +144,9 @@ void Sender::setDetectionInfo(SSL_DetectionFrame &detection, int camera_id, QVec
     }
 
     for (int i = 0; i < yellow_positions.size(); ++i) {
+        if (!inWorld(yellow_positions[i].x(), yellow_positions[i].y())) {
+            continue;
+        }
         // if ((yellow_positions[i].x() > 0 && camera_id == 0) || (yellow_positions[i].x() < 0 && camera_id == 1)) {
             SSL_DetectionRobot* robot = detection.add_robots_yellow();
             robot->set_robot_id(i);

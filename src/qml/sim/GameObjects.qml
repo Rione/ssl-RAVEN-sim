@@ -102,11 +102,43 @@ Node {
     property real ballLaunchSpeed: 0.0
     property bool ballRolling: true
     property var ballPositions: new Array(ballModelNum).fill(Qt.vector4d(0, 0, 0, 0))
+    // 場から出した台 (SimulatorControl の TeleportRobot の present = false) の置き場 [mm]。場からも、持った球の置き場
+    // (100000, 0, 100000) からも遠く、台どうしもぶつからない間をあける。vision は場の外の物を送らない (sender.cpp の inWorld)。
+    readonly property real parkOriginMm: 150000
+    readonly property real parkSpacingMm: 1000
+    // 場から出した台 (キーは "b3" / "y0")。体が置き場へ着くのは次の刻みなので、その前の刻みに口が球を捕り直さないよう、
+    // 出した時点から台の動き・捕る・蹴るを止めるのはこちらで見る。場に置き直すと消す。
+    property var offField: ({})
+    // 力で動かしている台 (TeleportRobot の by_force)。キーは "b3" / "y0"、値は
+    // { hasPosition, x, z [場の座標 mm], hasHeading, heading [rad] }。同じ台へ by_force = false の命令が来るまで続く。
+    property var forceMoves: ({})
+    // 力で動かす速さ: 残りの距離・角度をこの時間で詰める速さで引き、台の速さの上限 (Sumatra の機体の表の 4 m/s・
+    // 20 rad/s。どの機体の設定でもこれを超えて引かない) で頭を押さえる。人が手で台を寄せるくらいの速さ。
+    readonly property real forceMoveTimeConstantSec: 0.25
+    readonly property real forceMoveMaxSpeedMmS: 4000
+    readonly property real forceMoveMaxAngularRadS: 20
     MotionControl {
         id: motionControl
     }
     MathUtils {
         id: mu
+    }
+    // 台数を設定の画面で変えると台が作り直され、全部が場に戻る (Observer::resetPresence と同じ)。
+    function forgetRobotStates(prefix) {
+        for (let key in offField) {
+            if (key.startsWith(prefix)) delete offField[key];
+        }
+        for (let key in forceMoves) {
+            if (key.startsWith(prefix)) delete forceMoves[key];
+        }
+    }
+    Connections {
+        target: blue
+        function onNumChanged() { forgetRobotStates("b"); }
+    }
+    Connections {
+        target: yellow
+        function onNumChanged() { forgetRobotStates("y"); }
     }
     Connections {
         target: observer
@@ -144,31 +176,37 @@ Node {
             }
         }
         function onRobotReplacementRequested(id, isYellow, sceneX, sceneZ, sceneRotYDeg) {
-            // reset() (not just assigning position/eulerRotation) is required to actually
-            // warp a DynamicRigidBody's physics pose: for a dynamic body, physics owns the
-            // transform, so plain property assignment wouldn't move the PhysX actor. This
-            // also zeroes the body's linear/angular velocity. The observer has already
-            // stopped any latched velocity command for this robot (Robot::resetMotion(),
-            // called before this signal), so it stays put instead of immediately driving
-            // off again on the next tick.
-            let color = isYellow ? yellow : blue;
+            let key = (isYellow ? "y" : "b") + id;
+            delete forceMoves[key];
+            delete offField[key];
+            placeRobotBody(id, isYellow, sceneX, sceneZ, sceneRotYDeg);
+        }
+        // SimulatorControl の TeleportRobot (場に戻すときも)。持っていた球は放してから置く (ER-Force の sim と同じ)。
+        function onRobotTeleportRequested(id, isYellow, sceneX, sceneZ, sceneRotYDeg) {
+            releaseHeldBall(id, isYellow);
+            delete offField[(isYellow ? "y" : "b") + id];
+            placeRobotBody(id, isYellow, sceneX, sceneZ, sceneRotYDeg);
+        }
+        // present = false: 持っていた球を放し、台を場の外の置き場へ移す。向きはそのまま (戻すときに向きが無ければ使う)。
+        function onRobotRemovalRequested(id, isYellow) {
             let frame = (isYellow ? yBotsFrame : bBotsFrame).children[id];
-            // m2 は config の robotCount 分しか Repeater3D を生まない。mirror-kickoff が
-            // 退避用に id 11..15 を送ると children[id] が undefined → TypeError だった。
             if (!frame || typeof frame.reset !== "function") {
                 return;
             }
-            frame.reset(Qt.vector3d(sceneX, 0, sceneZ), Qt.vector3d(0, sceneRotYDeg, 0));
-            // botMovement() derives the robot's "current velocity" from the pose delta
-            // across one tick (poses[i] vs. prePoses[i]). Left untouched, prePoses[i]
-            // still holds the pre-teleport pose, so the position jump reads as a huge
-            // one-tick velocity and MotionControl's accel-limiter spends a few frames
-            // coasting it back down to the (now zero) commanded speed instead of the
-            // robot being still immediately. Seeding prePoses/preVelocities to the
-            // just-placed, at-rest pose avoids that phantom delta.
-            let headingRad = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
-            color.prePoses[id] = Qt.vector4d(frame.position.x, frame.position.y, frame.position.z, headingRad);
-            color.preVelocities[id] = Qt.vector4d(0, 0, 0, 0);
+            releaseHeldBall(id, isYellow);
+            delete forceMoves[(isYellow ? "y" : "b") + id];
+            offField[(isYellow ? "y" : "b") + id] = true;
+            let park = robotParkPosition(id, isYellow);
+            placeRobotBody(id, isYellow, park.x, park.z, frame.eulerRotation.y);
+        }
+        function onRobotForceMoveRequested(id, isYellow, active, hasPosition, sceneX, sceneZ, hasHeading, headingRad) {
+            let key = (isYellow ? "y" : "b") + id;
+            if (!active) {
+                delete forceMoves[key];
+                return;
+            }
+            releaseHeldBall(id, isYellow);
+            forceMoves[key] = { hasPosition: hasPosition, x: sceneX, z: sceneZ, hasHeading: hasHeading, heading: headingRad };
         }
         function onBallReplacementRequested(sceneX, sceneZ, hasVelocity, sceneVx, sceneVz) {
             placeBall(Qt.vector3d(sceneX, 21, sceneZ), hasVelocity ? Qt.vector3d(sceneVx, 0, sceneVz) : null);
@@ -513,6 +551,85 @@ Node {
         scale: Qt.vector3d(0.8, 0.01, 0.8)
     }
 
+    // Warps a robot's physics body to (sceneX, sceneZ) facing sceneRotYDeg, at rest.
+    function placeRobotBody(id, isYellow, sceneX, sceneZ, sceneRotYDeg) {
+        // reset() (not just assigning position/eulerRotation) is required to actually
+        // warp a DynamicRigidBody's physics pose: for a dynamic body, physics owns the
+        // transform, so plain property assignment wouldn't move the PhysX actor. This
+        // also zeroes the body's linear/angular velocity. The observer has already
+        // stopped any latched velocity command for this robot (Robot::resetMotion(),
+        // called before this signal), so it stays put instead of immediately driving
+        // off again on the next tick.
+        let color = isYellow ? yellow : blue;
+        let frame = (isYellow ? yBotsFrame : bBotsFrame).children[id];
+        // m2 は config の robotCount 分しか Repeater3D を生まない。mirror-kickoff が
+        // 退避用に id 11..15 を送ると children[id] が undefined → TypeError だった。
+        if (!frame || typeof frame.reset !== "function") {
+            return;
+        }
+        frame.reset(Qt.vector3d(sceneX, 0, sceneZ), Qt.vector3d(0, sceneRotYDeg, 0));
+        // botMovement() derives the robot's "current velocity" from the pose delta
+        // across one tick (poses[i] vs. prePoses[i]). Left untouched, prePoses[i]
+        // still holds the pre-teleport pose, so the position jump reads as a huge
+        // one-tick velocity and MotionControl's accel-limiter spends a few frames
+        // coasting it back down to the (now zero) commanded speed instead of the
+        // robot being still immediately. Seeding prePoses/preVelocities to the
+        // just-placed, at-rest pose avoids that phantom delta.
+        let headingRad = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
+        color.prePoses[id] = Qt.vector4d(frame.position.x, frame.position.y, frame.position.z, headingRad);
+        color.preVelocities[id] = Qt.vector4d(0, 0, 0, 0);
+    }
+
+    // 場から出した台の置き場 (場の座標 mm)。
+    function robotParkPosition(id, isYellow) {
+        return Qt.vector3d(parkOriginMm + parkSpacingMm * id, 0, isYellow ? parkOriginMm : parkOriginMm + 10 * parkSpacingMm);
+    }
+
+    // 台が場の外の置き場に居るか (場から出した台)。sender.cpp の inWorld と同じ線で見る。
+    function isParked(frame) {
+        return Math.abs(frame.position.x) >= 20000 || Math.abs(frame.position.z) >= 20000;
+    }
+
+    // この台が持っている球を口の前に放す (ドリブラを止めたのと同じ: 球は口の前に残り、台だけが動く)。
+    function releaseHeldBall(id, isYellow) {
+        let key = (isYellow ? "y" : "b") + id;
+        delete kickedBallInMouth[key];
+        delete bouncedBallInMouth[key];
+        (isYellow ? yellow : blue).holds[id] = false;
+        if (dribbleInfo.id != id || dribbleInfo.isYellow != isYellow) {
+            return;
+        }
+        let bp = heldBallScenePosition();
+        let frame = (isYellow ? yBotsFrame : bBotsFrame).children[id];
+        frame.collisionShapes[5].position = Qt.vector3d(0, 5000, 0);
+        dribbleInfo.id = -1;
+        ball.reset(bp, Qt.vector3d(0, 0, 0));
+        ballPosition = Qt.vector4d(bp.x, bp.y, bp.z, 0);
+    }
+
+    // by_force: 台を目標へ引く速度を体に与える (台の指令・同定モデルは通さない。人の手で寄せるのと同じ)。
+    function forceMoveBody(frame, pose, force) {
+        let vx = 0;
+        let vz = 0;
+        let w = 0;
+        if (force.hasPosition) {
+            let dx = force.x - frame.position.x;
+            let dz = force.z - frame.position.z;
+            let d = Math.hypot(dx, dz);
+            if (d > 0) {
+                let speed = Math.min(d / forceMoveTimeConstantSec, forceMoveMaxSpeedMmS);
+                vx = dx / d * speed;
+                vz = dz / d * speed;
+            }
+        }
+        if (force.hasHeading) {
+            let err = mu.normalizeRadian(force.heading - pose.w);
+            w = Math.max(-forceMoveMaxAngularRadS, Math.min(forceMoveMaxAngularRadS, err / forceMoveTimeConstantSec));
+        }
+        frame.setLinearVelocity(Qt.vector3d(vx, 0, vz));
+        frame.setAngularVelocity(Qt.vector3d(0, w, 0));
+    }
+
     // Scene position of the ball: the physics body, or the holder's mouth while it is held (the body is parked).
     function heldBallScenePosition() {
         if (dribbleInfo.id == -1) {
@@ -536,6 +653,10 @@ Node {
                 let frame = frames.children[i];
                 if (!frame) {
                     continue;
+                }
+                let robotKey = (isYellow ? "y" : "b") + i;
+                if (robotKey in forceMoves || robotKey in offField) {
+                    continue;   // off the field, or pulled by the referee's hand (by_force): its mouth does not act
                 }
                 let w = mu.normalizeRadian((frame.eulerRotation.y + 90) * Math.PI / 180.0);
                 let d = Math.hypot(frame.position.x - bp.x, frame.position.z - bp.z);
@@ -583,6 +704,21 @@ Node {
             color.poses[i] = Qt.vector4d(frame.position.x, frame.position.y, frame.position.z, mu.normalizeRadian((frame.eulerRotation.y+90) * Math.PI / 180.0));
 
             color.velocities[i] = mu.calcVelocity(color.poses[i], color.prePoses[i], timestep);
+            // 場から出した台は置き場で止めておく (指令も球も見ない)。
+            // 力で動かしている台 (by_force) は目標へ引くだけで、台の指令も口 (捕る・蹴る) も働かせない。
+            let forceMove = forceMoves[(isYellow ? "y" : "b") + i];
+            if (((isYellow ? "y" : "b") + i) in offField || forceMove !== undefined) {
+                color.prePoses[i] = color.poses[i];
+                color.preVelocities[i] = Qt.vector4d(0, 0, 0, 0);
+                color.holds[i] = false;
+                if (forceMove !== undefined) {
+                    forceMoveBody(frame, color.poses[i], forceMove);
+                } else {
+                    frame.setLinearVelocity(Qt.vector3d(0, 0, 0));
+                    frame.setAngularVelocity(Qt.vector3d(0, 0, 0));
+                }
+                continue;
+            }
             // velTangents/velNormals/velAngulars は Robot::advanceActuation が実機の同定モデル
             // (むだ時間・一次遅れ・定常ゲイン・軸別の牽引限界・車輪周速の予算) を通したあとの
             // 「実際に出る速度」。MotionControl の等方な加減速制限を上から重ねると、軸ごとに

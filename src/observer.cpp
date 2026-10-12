@@ -29,6 +29,7 @@ Observer::Observer(QObject *parent) : QObject(parent), config(configFilePath(), 
     commandListenPort = config.value("Network/commandListenPort", 20011).toInt();
     blueTeamControlPort = config.value("Network/blueTeamControlPort", 10301).toInt();
     yellowTeamControlPort = config.value("Network/yellowTeamControlPort", 10302).toInt();
+    simulationControlPort = config.value("Network/simulationControlPort", 10300).toInt();
     
     forceDebugDrawMode = config.value("Display/ForceDebugDrawMode", false).toBool();
     lightBlueRobotMode = config.value("LightMode/BlueRobot", true).toBool();
@@ -49,14 +50,17 @@ Observer::Observer(QObject *parent) : QObject(parent), config(configFilePath(), 
     visionReceiver = new VisionReceiver(this);
     controlBlueReceiver = new ControlBlueReceiver(this);
     controlYellowReceiver = new ControlYellowReceiver(this);
+    simulationControlReceiver = new SimulationControlReceiver(this);
 
     visionReceiver->startListening(commandListenPort);
     controlBlueReceiver->startListening(blueTeamControlPort);
     controlYellowReceiver->startListening(yellowTeamControlPort);
+    simulationControlReceiver->startListening(simulationControlPort);
 
     connect(visionReceiver, &VisionReceiver::receivedPacket, this, &Observer::visionReceive);
     connect(controlBlueReceiver, &ControlBlueReceiver::receivedPacket, this, &Observer::controlReceive);
     connect(controlYellowReceiver, &ControlYellowReceiver::receivedPacket, this, &Observer::controlReceive);
+    connect(simulationControlReceiver, &SimulationControlReceiver::receivedCommand, this, &Observer::simulationControlReceive);
     connect(sender, &Sender::packetSent, this, &Observer::visionPacketSent);
     connect(this, &Observer::sendBotBallContacts, controlBlueReceiver, &ControlBlueReceiver::updateBallContacts);
     connect(this, &Observer::sendBotBallContacts, controlYellowReceiver, &ControlYellowReceiver::updateBallContacts);
@@ -71,6 +75,8 @@ Observer::Observer(QObject *parent) : QObject(parent), config(configFilePath(), 
 
     blueRobotCount = config.value("Robot/blueRobotCount", 11).toInt();
     yellowRobotCount = config.value("Robot/yellowRobotCount", 11).toInt();
+    resetPresence(false);
+    resetPresence(true);
 
     numThreads = config.value("Display/NumThreads", -1).toInt();
 
@@ -191,13 +197,26 @@ void Observer::visionReceive(const mocSim_Packet& packet) {
     if (isYellow) emit yellowRobotsChanged();
     else emit blueRobotsChanged();
 
-    // Robot/ball placement (Replacement). turnon=false (robot removal) is not
-    // handled: this side always sends turnon=true.
+    // Robot/ball placement (Replacement). turnon=false takes the robot off the field, the same as
+    // SimulatorControl's present=false. Placing a robot that was taken off puts it back on the field.
     bool blueReplaced = false;
     bool yellowReplaced = false;
     for (const auto& robotReplacement : packet.replacement().robots()) {
         int id = robotReplacement.id();
         if (id < 0 || id >= MaxRobots) continue;
+        const bool isYellow = robotReplacement.yellowteam();
+        const bool exists = id < (isYellow ? yellowRobotCount : blueRobotCount);
+        auto &present = isYellow ? yellowPresent : bluePresent;
+        if (robotReplacement.has_turnon() && !robotReplacement.turnon()) {
+            if (exists && present[id]) {
+                removeRobot(id, isYellow);
+            }
+            continue;
+        }
+        if (exists) {
+            present[id] = true;
+        }
+        stopForceMove(id, isYellow);
         float sceneX = robotReplacement.x() * 1000.0f;
         float sceneZ = -robotReplacement.y() * 1000.0f;
         float sceneRotYDeg = robotReplacement.dir() * 180.0 / M_PI - 90.0;
@@ -231,6 +250,214 @@ void Observer::visionReceive(const mocSim_Packet& packet) {
             emit ballReplacementRequested(sceneX, sceneZ, hasVelocity, sceneVx, sceneVz);
         }
     }
+}
+
+void Observer::resetPresence(bool isYellow) {
+    auto &present = isYellow ? yellowPresent : bluePresent;
+    auto &force = isYellow ? yellowForceMove : blueForceMove;
+    const int count = isYellow ? yellowRobotCount : blueRobotCount;
+    for (int i = 0; i < MaxRobots; ++i) {
+        present[i] = i < count;
+        force[i] = false;
+    }
+}
+
+// SimulatorCommand を 1 つ処理して返事を返す。意味は ssl-simulation-protocol の ssl_simulation_control.proto の注釈に従う。
+// 細かいところ (位置は x と y の両方が要る・場に居ない台への移動は捨てる・by_force に 0 でない速度は誤り) は
+// ER-Force の sim (amun/simulator) に揃え、誤りは code を ER-Force と同じ名前にする。
+void Observer::simulationControlReceive(const SimulatorCommand &command, const QHostAddress &sender, quint16 senderPort) {
+    SimulatorResponse response;
+    if (command.has_config()) {
+        SimulatorError *error = response.add_errors();
+        error->set_code("UNSUPPORTED_CONFIG");
+        error->set_message("this sim reads its settings from its config file (--config); SimulatorConfig is ignored");
+    }
+    if (command.has_control()) {
+        const SimulatorControl &control = command.control();
+        if (control.has_teleport_ball()) {
+            handleTeleportBall(control.teleport_ball(), response);
+        }
+        for (const auto &teleport : control.teleport_robot()) {
+            handleTeleportRobot(teleport, response);
+        }
+        if (control.has_simulation_speed()) {
+            SimulatorError *error = response.add_errors();
+            error->set_code("UNSUPPORTED_SIMULATION_SPEED");
+            error->set_message("this sim runs at real time; simulation_speed is ignored");
+        }
+    }
+    for (const auto &error : response.errors()) {
+        std::cerr << "[SimulatorControl] " << error.code() << ": " << error.message() << std::endl;
+    }
+    simulationControlReceiver->sendResponse(response, sender, senderPort);
+}
+
+void Observer::handleTeleportBall(const TeleportBall &teleport, SimulatorResponse &response) {
+    auto fail = [&response](const char *code, const std::string &message) {
+        SimulatorError *error = response.add_errors();
+        error->set_code(code);
+        error->set_message(message);
+    };
+    if (teleport.by_force()) {
+        fail("UNSUPPORTED_BALL_BY_FORCE", "moving the ball by force is not supported; the ball was not moved");
+        return;
+    }
+    if (teleport.has_x() != teleport.has_y() || !teleport.has_x()) {
+        fail("PARTIAL_COORD", "this sim needs both x and y to place the ball; the ball was not moved");
+        return;
+    }
+    if ((teleport.has_z() && teleport.z() != 0.0f) || (teleport.has_vz() && teleport.vz() != 0.0f)) {
+        fail("UNSUPPORTED_BALL_HEIGHT", "the ball is placed on the ground; z and vz are ignored");
+    }
+    if (teleport.teleport_safely()) {
+        fail("UNSUPPORTED_TELEPORT_SAFELY", "robots are not moved out of the way; teleport_safely is ignored");
+    }
+    if (teleport.roll()) {
+        fail("UNSUPPORTED_ROLL", "the ball starts sliding as after a kick; roll is ignored");
+    }
+    const bool hasVelocity = teleport.has_vx() || teleport.has_vy();
+    emit ballReplacementRequested(teleport.x() * 1000.0f, -teleport.y() * 1000.0f, hasVelocity,
+                                  teleport.vx() * 1000.0f, -teleport.vy() * 1000.0f);
+}
+
+void Observer::handleTeleportRobot(const TeleportRobot &teleport, SimulatorResponse &response) {
+    auto fail = [&response](const char *code, const std::string &message) {
+        SimulatorError *error = response.add_errors();
+        error->set_code(code);
+        error->set_message(message);
+    };
+    const RobotId &robotId = teleport.id();
+    if (!robotId.has_id() || !robotId.has_team() || (robotId.team() != Team::YELLOW && robotId.team() != Team::BLUE)) {
+        fail("INVALID_ROBOT_ID", "TeleportRobot needs an id and a team (YELLOW or BLUE)");
+        return;
+    }
+    const bool isYellow = robotId.team() == Team::YELLOW;
+    const int id = static_cast<int>(robotId.id());
+    const int count = isYellow ? yellowRobotCount : blueRobotCount;
+    const bool exists = id < count && id < MaxRobots;
+    auto &present = isYellow ? yellowPresent : bluePresent;
+    const bool wasPresent = exists && present[id];
+    const std::string who = std::string(isYellow ? "yellow " : "blue ") + std::to_string(id);
+    const bool nonZeroVelocity = (teleport.has_v_x() && teleport.v_x() != 0.0f)
+                                 || (teleport.has_v_y() && teleport.v_y() != 0.0f)
+                                 || (teleport.has_v_angular() && teleport.v_angular() != 0.0f);
+    if (teleport.has_present() && !teleport.present()) {
+        // 場から出す。居ない台は何もしない (proto: "removed, if it is present")。他の欄は見ない
+        if (wasPresent) {
+            removeRobot(id, isYellow);
+        }
+        return;
+    }
+    if (teleport.has_x() != teleport.has_y()) {
+        fail("PARTIAL_COORD", "robot " + who + ": x and y must be given together; the robot was not moved");
+        return;
+    }
+    if (teleport.by_force() && nonZeroVelocity) {
+        fail("VELOCITY_FORCE", "robot " + who + ": velocities != 0 and by_force are incompatible");
+        return;
+    }
+
+    if (teleport.has_present()) {
+        if (!exists) {
+            fail("CREATE_UNSPEC_ROBOT", "robot " + who + " cannot be added: this sim has robots 0.."
+                     + std::to_string(count - 1) + " for this team ([Robot] "
+                     + (isYellow ? "yellow" : "blue") + "RobotCount)");
+            return;
+        }
+        if (!wasPresent) {
+            // 場に戻す。置く所が要る (proto: "added, if it does not exist yet")
+            if (!teleport.has_x()) {
+                fail("CREATE_NOPOS_ROBOT", "robot " + who + " cannot be added without x and y");
+                return;
+            }
+            present[id] = true;
+            const QList<QVector3D> &positions = isYellow ? yellowPositions : bluePositions;
+            const float heading = teleport.has_orientation()
+                                      ? teleport.orientation()
+                                      : (id < positions.size() ? positions[id].z() * static_cast<float>(M_PI) / 180.0f : 0.0f);
+            placeRobot(id, isYellow, teleport.x() * 1000.0f, teleport.y() * 1000.0f, heading,
+                       teleport.v_x() * 1000.0f, teleport.v_y() * 1000.0f, teleport.v_angular());
+            if (teleport.by_force()) {
+                // 力で動かす命令は取り消されるまで続く。置いた所に留める
+                startForceMove(id, isYellow, true, teleport.x() * 1000.0f, teleport.y() * 1000.0f,
+                               teleport.has_orientation(), teleport.orientation());
+            }
+            return;
+        }
+    } else if (!wasPresent) {
+        // 場に居ない台を動かす命令は捨てる (ER-Force の sim と同じ)
+        return;
+    }
+
+    if (teleport.by_force()) {
+        if (!teleport.has_x() && !teleport.has_orientation()) {
+            stopForceMove(id, isYellow);
+            return;
+        }
+        startForceMove(id, isYellow, teleport.has_x(), teleport.x() * 1000.0f, teleport.y() * 1000.0f,
+                       teleport.has_orientation(), teleport.orientation());
+        return;
+    }
+    // by_force = false の命令は、前の力で動かす命令を終わらせる。何も書いていなければ終わらせるだけ (proto の注釈)
+    stopForceMove(id, isYellow);
+    if (!teleport.has_x() && !teleport.has_orientation() && !teleport.has_v_x() && !teleport.has_v_y()
+        && !teleport.has_v_angular()) {
+        return;
+    }
+    // 書いていない量は今のまま (位置・向きは直前に vision へ出したもの)
+    const QList<QVector3D> &positions = isYellow ? yellowPositions : bluePositions;
+    const QVector3D current = id < positions.size() ? positions[id] : QVector3D(0.0f, 0.0f, 0.0f);
+    const float xMm = teleport.has_x() ? teleport.x() * 1000.0f : current.x();
+    const float yMm = teleport.has_y() ? teleport.y() * 1000.0f : current.y();
+    const float heading = teleport.has_orientation() ? teleport.orientation()
+                                                     : current.z() * static_cast<float>(M_PI) / 180.0f;
+    placeRobot(id, isYellow, xMm, yMm, heading, teleport.v_x() * 1000.0f, teleport.v_y() * 1000.0f, teleport.v_angular());
+}
+
+void Observer::removeRobot(int id, bool isYellow) {
+    (isYellow ? yellowPresent : bluePresent)[id] = false;
+    stopForceMove(id, isYellow);
+    (isYellow ? yellowRobots : blueRobots)[id]->resetMotion();
+    emit robotRemovalRequested(id, isYellow);
+    if (isYellow) emit yellowRobotsChanged();
+    else emit blueRobotsChanged();
+}
+
+void Observer::startForceMove(int id, bool isYellow, bool hasPosition, float xMm, float yMm,
+                              bool hasHeading, float headingRad) {
+    // 力で動かす間、台は自分の指令では動かない。それまでに出ていた指令は捨てる
+    (isYellow ? yellowForceMove : blueForceMove)[id] = true;
+    (isYellow ? yellowRobots : blueRobots)[id]->resetMotion();
+    emit robotForceMoveRequested(id, isYellow, true, hasPosition, xMm, -yMm, hasHeading, headingRad);
+    if (isYellow) emit yellowRobotsChanged();
+    else emit blueRobotsChanged();
+}
+
+void Observer::stopForceMove(int id, bool isYellow) {
+    auto &force = isYellow ? yellowForceMove : blueForceMove;
+    if (!force[id]) {
+        return;
+    }
+    force[id] = false;
+    // 力で動かしていた間に届いた指令は効かせない (その間の台は手で押さえられていた)。次の指令から動く
+    (isYellow ? yellowRobots : blueRobots)[id]->resetMotion();
+    emit robotForceMoveRequested(id, isYellow, false, false, 0.0f, 0.0f, false, 0.0f);
+    if (isYellow) emit yellowRobotsChanged();
+    else emit blueRobotsChanged();
+}
+
+void Observer::placeRobot(int id, bool isYellow, float xMm, float yMm, float headingRad,
+                          float vxMmS, float vyMmS, float angularRadS) {
+    Robot *robot = (isYellow ? yellowRobots : blueRobots)[id];
+    // 置く前に出ていた指令は捨てる (Replacement と同じ)。速度は台の座標に回して、台がいま出している速度にする
+    robot->resetMotion();
+    const float c = std::cos(headingRad);
+    const float s = std::sin(headingRad);
+    robot->setAppliedVelocity(vxMmS * c + vyMmS * s, -vxMmS * s + vyMmS * c, angularRadS);
+    const float sceneRotYDeg = headingRad * 180.0f / static_cast<float>(M_PI) - 90.0f;
+    emit robotTeleportRequested(id, isYellow, xMm, -yMm, sceneRotYDeg);
+    if (isYellow) emit yellowRobotsChanged();
+    else emit blueRobotsChanged();
 }
 
 void Observer::controlReceive(const RobotControl& packet, bool isYellow) {
@@ -329,11 +556,13 @@ void Observer::setLightFieldMode(bool mode) {
 }
 void Observer::setBlueRobotCount(int count) {
     blueRobotCount = count;
+    resetPresence(false);
     config.setValue("Robot/blueRobotCount", count);
     emit settingChanged();
 }
 void Observer::setYellowRobotCount(int count) {
     yellowRobotCount = count;
+    resetPresence(true);
     config.setValue("Robot/yellowRobotCount", count);
     emit settingChanged();
 }
@@ -501,6 +730,10 @@ void Observer::emitEncoderFeedback(const QList<QVector3D> &positions,
         // the same pose RAVEN receives on vision, so the encoder agrees with it.
         const QVector3D &p = positions[i];
         const QVector3D &pp = prevEncoderPositions[i];
+        // 場に居ない台 (場から出した台) は返りを送らない。出し入れした刻みは位置が飛ぶので、そこも送らない
+        if (!Sender::inWorld(p.x(), p.y()) || !Sender::inWorld(pp.x(), pp.y())) {
+            continue;
+        }
         double wvx = (p.x() - pp.x()) / dtSec;  // world vx [mm/s]
         double wvy = (p.y() - pp.y()) / dtSec;  // world vy [mm/s]
         double dthDeg = std::fmod(p.z() - pp.z() + 540.0, 360.0) - 180.0;  // wrapped [deg]

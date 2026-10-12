@@ -194,6 +194,15 @@ void Robot::resetMotion() {
     delayBufAngular.clear();
 }
 
+void Robot::setAppliedVelocity(float tangentMmS, float normalMmS, float angularRadS) {
+    appliedTangent = tangentMmS;
+    appliedNormal = normalMmS;
+    appliedAngular = angularRadS;
+    veltangent = tangentMmS;
+    velnormal = normalMmS;
+    velangular = angularRadS;
+}
+
 // 指令 (cmd*) から実際に台へ与える速度 (veltangent/velnormal/velangular) までを
 // 1 tick 進める。実機の同定モデルの順で効かせる:
 //   むだ時間 → 回転の不感帯 → 定常ゲイン → 角速度上限 → 並進の速さの上限 → 車輪周速の予算 → 一次遅れ → 合成または軸別の加減速上限

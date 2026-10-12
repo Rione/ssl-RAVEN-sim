@@ -214,10 +214,16 @@ QML では、**存在しないディレクトリの `import` は致命的エラ�
 | 受信 | コマンド（`mocSim_Packet`） | `0.0.0.0:20694` |
 | 受信 | 青チーム制御（`RobotControl`） | `0.0.0.0:10301` |
 | 受信 | 黄チーム制御（`RobotControl`） | `0.0.0.0:10302` |
+| 受信・返信 | sim の操作（`SimulatorCommand`。球と台の置き直し、台を場から出し入れ）。返事は `SimulatorResponse` | `0.0.0.0:10300`（`[Network] simulationControlPort`） |
 | 送信 | vision（`SSL_WrapperPacket`） | `224.5.23.2:10694` |
 | 送信 | エンコーダフィードバック（`PiToMw`） | `224.5.69.4:16941` |
 
 パケットの詳細な定義は [docs/architecture.md](docs/architecture.md) の 4 章にあります。
+
+`SimulatorCommand` の `teleport_robot` は ssl-simulation-protocol の決まりどおりに台を動かします。`present = false` で台を場から
+出し（vision に映らず、場に体も無い）、`present = true` と `x`・`y`（・`orientation`）で場に戻します。`by_force` は台を置き直さず、
+目標へ引き寄せます（同じ台へ `by_force = false` の命令が来るまで続く）。足せるのは `[Robot]` の台数までの番号だけです。
+決まりの細部と誤りの名前（`code`）は ER-Force の sim に揃えてあり、`tools/check_simulation_control.py` で確かめられます。
 
 ---
 

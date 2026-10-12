@@ -188,3 +188,50 @@ void ControlYellowReceiver::setPort(quint16 newPort) {
     stopListening();
     startListening(newPort);
 }
+SimulationControlReceiver::SimulationControlReceiver(QObject *parent)
+    : QObject(parent), udpSocket(new QUdpSocket(this)) {}
+
+SimulationControlReceiver::~SimulationControlReceiver() {
+    stopListening();
+}
+
+void SimulationControlReceiver::startListening(quint16 port) {
+    if (udpSocket->bind(QHostAddress::AnyIPv4, port)) {
+        connect(udpSocket, &QUdpSocket::readyRead, this, &SimulationControlReceiver::receive, Qt::UniqueConnection);
+        std::cout << "Listening on port " << port << " (SimulatorCommand)" << std::endl;
+    } else {
+        std::cerr << "Failed to bind UDP socket to port " << port << " (SimulatorCommand)" << std::endl;
+    }
+}
+
+void SimulationControlReceiver::stopListening() {
+    if (udpSocket && udpSocket->state() == QAbstractSocket::BoundState) {
+        udpSocket->close();
+    }
+}
+
+void SimulationControlReceiver::receive() {
+    while (udpSocket->hasPendingDatagrams()) {
+        QNetworkDatagram datagram = udpSocket->receiveDatagram();
+        if (!datagram.isValid()) continue;
+        SimulatorCommand command;
+        if (!command.ParseFromArray(datagram.data().data(), datagram.data().size())) {
+            SimulatorResponse response;
+            SimulatorError *error = response.add_errors();
+            error->set_code("PARSE_ERROR");
+            error->set_message("could not parse the datagram as SimulatorCommand");
+            sendResponse(response, datagram.senderAddress(), datagram.senderPort());
+            continue;
+        }
+        emit receivedCommand(command, datagram.senderAddress(), datagram.senderPort());
+    }
+}
+
+void SimulationControlReceiver::sendResponse(const SimulatorResponse &response, const QHostAddress &address, quint16 port) {
+    std::string serialized;
+    if (!response.SerializeToString(&serialized)) {
+        std::cerr << "Failed to serialize SimulatorResponse." << std::endl;
+        return;
+    }
+    udpSocket->writeDatagram(QByteArray::fromStdString(serialized), address, port);
+}
