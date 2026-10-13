@@ -45,10 +45,13 @@ C++ 約 1,980 行 / QML 約 3,550 行。**行数でも責務でも QML 側が主
   さらに `QVector3D` の `.z()` が「見出し角[度]」を意味する箇所がある。
 - **設定ファイルが 2 系統ある。** `config/config_v2.ini` は `Observer` が読み、
   `config/config.ini` は `MathUtils` と `MotionControl` が読む。
+  `Observer` の読むファイルは起動の引数 `--config <ファイル>` で替えられる
+  (Sumatra と試合をさせるときは `config/config_sumatra.ini`。`tools/gen_robot_models.py` が作る)。
   両方に `[Physics]` があり一部キーが重複しているため、片方を直しても他方に反映されない。
 - `config_v2.ini` の `[Geometery]` セクションはどこからも読まれていない。
   フィールド寸法は `sender.cpp` / `Field.qml` / `VField.qml` に個別に直書きされている。
-- `test/` は `CMakeLists.txt` から参照されておらずビルドされない。
+- `BUILD_TESTING=ON` で `test/pr20_regression_test.cpp` と `test/pr20_measurement_test.py` を CTest に登録する。
+  `test/pr20_sim_regression.py` は試験専用ポートで sim を起動する手動の回帰試験。
 - 意味が通らないコードに出会ったら、理解不足より先に**実装の残骸**を疑う。
   未使用の宣言やコメントアウトされた旧実装が各所に残っている。
 

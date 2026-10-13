@@ -62,10 +62,21 @@ class Observer : public QObject {
     // ロボットに当たったときの跳ね返り (ball_model.direct_kick)。
     Q_PROPERTY(float ballNormalRestitution READ getBallNormalRestitution CONSTANT)
     Q_PROPERTY(float ballTangentRetention READ getBallTangentRetention CONSTANT)
+    // 機体に対する球の速さがこれ以上だとドリブラは捕れない [mm/s] ([Physics] DribblerCatchMaxSpeedMmS)。
+    Q_PROPERTY(float dribblerCatchMaxSpeedMmS READ getDribblerCatchMaxSpeedMmS CONSTANT)
+    // 蹴ってから次を蹴れるまでの時間 [s] ([Physics] KickerRechargeSec)。0 ならいつでも蹴れる。
+    Q_PROPERTY(float kickerRechargeSec READ getKickerRechargeSec CONSTANT)
 
 public:
     static constexpr int MaxRobots = 16;
     explicit Observer(QObject *parent = nullptr);
+
+    // 読み書きする設定ファイル。既定は <リポジトリ>/config/config_v2.ini。起動の引数 --config で
+    // 別のファイルを選んだときは、main が QML を読む前 (Observer を作る前) に setConfigFilePath で渡す。
+    // 設定の画面で保存したときも、このファイルに書く。
+    static QString defaultConfigFilePath();
+    static void setConfigFilePath(const QString &path);
+    static QString configFilePath();
 
     Q_INVOKABLE void updateObjects(
         QList<QVector3D> blue_positions, 
@@ -130,9 +141,12 @@ public:
     float getBallSwitchRatio() const { return ballSwitchRatio; }
     float getBallNormalRestitution() const { return ballNormalRestitution; }
     float getBallTangentRetention() const { return ballTangentRetention; }
+    float getDribblerCatchMaxSpeedMmS() const { return dribblerCatchMaxSpeedMmS; }
+    float getKickerRechargeSec() const { return kickerRechargeSec; }
 
     void setWindowWidth(int width);
     void setWindowHeight(int height);
+    Q_INVOKABLE void saveWindowSize();
     void setVisionMulticastAddress(const QString &address);
     void setVisionMulticastPort(int port);
     void setCommandListenPort(int port);
@@ -271,6 +285,8 @@ private:
     float ballSwitchRatio = 2.0f / 3.0f;
     float ballNormalRestitution = 0.8f;
     float ballTangentRetention = 1.0f;
+    float dribblerCatchMaxSpeedMmS = 1500.0f;
+    float kickerRechargeSec = 1.0f;
 };
 
 #endif // OBSERVER_H

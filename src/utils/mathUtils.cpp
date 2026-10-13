@@ -26,17 +26,14 @@ float MathUtils::vector3dLength(QVector4D vec) {
     return std::sqrt(vec.x() * vec.x() + vec.y() * vec.y() + vec.z() * vec.z());
 }
 
+// 1 刻みの姿勢の差分から速度を返す。x/y/z はシーンの軸のまま回さない (y は高さ)。
+// w は向きの変化率。呼び出し側は球との相対速度のように世界の軸で使うので、機体の軸の
+// 速度が要るときは呼び出し側で向きを使って回す。
 QVector4D MathUtils::calcVelocity(QVector4D pose, QVector4D prePose, float deltaTime) {
-    QVector4D worldVelocity = QVector4D(
+    return QVector4D(
         (pose.x() - prePose.x()) / deltaTime,
         (pose.y() - prePose.y()) / deltaTime,
         (pose.z() - prePose.z()) / deltaTime,
         normalizeRadian(pose.w() - prePose.w()) / deltaTime
-    );
-    return QVector4D(
-        worldVelocity.x() * cos(-pose.w()) - worldVelocity.y() * sin(-pose.w()),
-        worldVelocity.x() * sin(-pose.w()) + worldVelocity.y() * cos(-pose.w()),
-        worldVelocity.z(),
-        worldVelocity.w()
     );
 }

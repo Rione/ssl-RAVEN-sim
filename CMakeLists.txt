@@ -185,3 +185,20 @@ add_custom_target(run
     COMMAND ${CMAKE_BINARY_DIR}/bin/m2-Sim
     DEPENDS m2-Sim
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(pr20-regression-test
+        test/pr20_regression_test.cpp
+        src/models/robot.cpp src/models/robot.h
+        src/models/robotModel.cpp src/models/robotModel.h
+        ${PROTO_SRCS})
+    target_include_directories(pr20-regression-test PRIVATE ${SRC_DIR} ${PROTO_GEN_DIR} ${Protobuf_INCLUDE_DIRS})
+    target_link_libraries(pr20-regression-test PRIVATE Qt6::Core Qt6::Gui Qt6::Qml ${PROTOBUF_LINK_LIBRARIES})
+    target_compile_definitions(pr20-regression-test PRIVATE SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
+    add_test(NAME pr20-motion-contact COMMAND pr20-regression-test)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME pr20-measurement COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/pr20_measurement_test.py)
+    endif()
+endif()

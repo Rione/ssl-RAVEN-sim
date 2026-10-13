@@ -51,9 +51,18 @@ struct RobotMotionModel {
     float tractionDecelXMmS2 = 3000.0f;
     float tractionDecelYMmS2 = 3000.0f;
 
+    // 合成並進加減速度 [mm/s²]。両方 > 0 で有効。未指定なら従来の軸別制限。
+    float maxLinearAccelMmS2 = 0.0f;
+    float maxLinearDecelMmS2 = 0.0f;
+
     // 角速度の限界 (RAVEN の app/config/physics.yaml: max_angular_velocity / _acceleration)。
     float maxAngularVelRadS = 10.0f;
     float maxAngularAccelRadS2 = 35.0f;
+
+    // 並進の速さの上限 [mm/s]。指令の向きは保ったまま大きさだけを押さえる。
+    // 牽引限界は加減速しか縛らないので、車輪周速の予算を 0 にした台ではこれが無いと
+    // 指令した速さがそのまま出る。0 は上限なし。
+    float maxLinearVelMmS = 0.0f;
 
     // 並進と旋回を合わせた車輪周速の予算 [mm/s] (yaml: wheel_rim_speed_budget_mm_s)。
     // 全速で走りながら全速で回ることはできない、という実機の当たり前をここで効かせる。
