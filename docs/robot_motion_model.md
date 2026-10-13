@@ -95,6 +95,8 @@ RAVEN の `BallSpeedModel` と同じ **滑走 → 転がりの 2 段一定減速
 | `KSwitch` | `ball_model.k_switch` | 0.54 |
 | `DirectKickNormalRestitution` | `ball_model.direct_kick.normal_restitution` | 0.8 |
 | `DirectKickTangentRetention` | `ball_model.direct_kick.tangent_retention` | 1.0 |
+| `ChipDampingXyFirstHop` | `kick.chip.bounce.*.damping_xy_first_hop`（control.yaml） | 0.55 |
+| `ChipDampingXyOtherHops` | `kick.chip.bounce.*.damping_xy_other_hops`（control.yaml） | 0.88 |
 
 肝は**切り替えの基準が蹴り出しの速さ v0** であること（`v_switch = KSwitch · v0`）。
 物理的な転がり条件（剛球なら 5/7·v0）とは別物で、RAVEN の `ball_model.k_switch` は 0.54 なので
@@ -134,6 +136,25 @@ sim もそれに従う。v0 は `ballLaunchSpeed` が持ち、キック・速度
 
 球の材質の摩擦も 0。地面の接線力は `applyBallFriction()` が丸ごと持っているため
 （PhysX 側にも摩擦があると滑走相が二重に減速する）。
+
+### 床で跳ねる球（`ChipDampingXyFirstHop` / `ChipDampingXyOtherHops`）
+
+床と球の摩擦が 0 なので、PhysX のままではチップの球が床で跳ねても横の速さが落ちない（接地した刻みの滑りの減速
+だけで、1 回の跳ねで 0.98 倍ほど）。実物の球は跳ねた瞬間の床の摩擦で前への勢いの一部が回転に移り、そこから転がる。
+そこで `applyFloorBounce()` が、跳ねるたびに横の速さへ残る割合を掛ける。SSL の球のモデル
+（`ssl_vision_geometry.proto` の `SSL_BallModelChipFixedLoss`）と同じ形で、まだ転がりに入っていない球
+（蹴ってから回っていない）は `ChipDampingXyFirstHop`、もう転がっている球は `ChipDampingXyOtherHops`。
+跳ねた後の球は転がっているものとして、地面では転がりの減速（`AccRollMmS2`）だけが掛かる。上の速さは PhysX の
+反発（球と床の材質の平均）のまま。数えるのは球の中心が 30 mm より上から落ちてきた跳ねだけで、それより低い跳ねは
+地面を転がる球として摩擦が扱う（浮いているかの線と同じ）。落ちてきた球が床に着くまでは地面の摩擦を掛けない
+（着く直前に中心が 30 mm を下回った刻みで滑りの減速を掛けると、残る割合がその分小さくなる）。
+
+既定の 0.55 / 0.88 は、RoboCup 2026 の会場の床で測られ、SSL-Vision が配った値
+（[RoboCup-SSL/ssl-vision-processor](https://github.com/RoboCup-SSL/ssl-vision-processor) の `geometry-divA.yml`、
+2026-07-18 の commit 97e3984「Default values are from RoboCup 2026」）。このモデルの値の測り方は TIGERs Mannheim の
+2026 年の ETDP の 2.3 節にある（2 台でチップを蹴り合い、映像の軌跡にモデルを当てはめる。RoboCup 2026 の値がこの手順で
+測られたかは commit に書かれていない）。RAVEN の実機のチップの記録は無く、RAVEN の模型の 0.80 / 0.85 は Sumatra の
+`BallParameters` の既定（測った出どころの書き残しが無い）。
 
 設定パネルの `Ball Slide Decel` / `Ball Roll Decel` がこの 2 つの減速度。
 （以前の `Ball Dynamic Friction` / `Rolling Friction` は係数だったので、置き換えた。）
@@ -180,6 +201,7 @@ python3 tools/gen_robot_models.py --model sumatra --write-ini
 | キッカーの再充電 | 0 s | sim の機体はいつも満充電 |
 | 捕れる相対速度 | 4000 mm/s | パスの受け側は最大 3.2 m/s |
 | 球の減速 | 滑り −3000・転がり −260・切り替え 0.64 | `BallParameters`（sim の geometry は球のモデルを送らない） |
+| 床で跳ねたとき横の速さが残る割合 | 0.55 / 0.88（`config_v2.ini` のまま。床の性質なので機体の表では替えない） | Sumatra は `BallParameters` の既定 0.8 / 0.85 で予測する |
 | 口の板の反発 / 沿う成分の保持 | 0.55 / 0.35（実機の板は 0.47 / 1.0） | `BallParameters` の `redirectRestitutionCoefficient` / `redirectSpinFactor` の SIMULATOR（止めずに蹴る計画は `ConstantLossRedirectConsultant`） |
 
 蹴る・捕るの鍵（`[Physics]`、鍵が無いときの既定は括弧内）:

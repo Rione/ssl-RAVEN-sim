@@ -94,5 +94,14 @@ int main(int argc, char **argv) {
         kickTookEffect({x:2.1,y:2.0,z:0}, {x:2.12,y:2.12,z:0}, {x:0,y:0,z:0})
     )");
     check(!kicked.isError() && kicked.toBool(), "kick is taken as launched only once the samples show it");
+    // A chip falling at 2.8 m/s (centre 21 mm = on the floor) that bounced inside the last 16.7 ms step is a floor bounce,
+    // whether the step's sample still reads down or already up, and so is one stopped by the floor without a rebound. A ball
+    // that never came down from the air, a ball still falling, and a ball turning back on a robot's top (150 mm) are not.
+    auto bounced = js.evaluate(R"(
+        floorBounce(true, 50, -2.8, 30, 1.2, 16.7, 21) && floorBounce(true, 30, -0.4, 45, 1.1, 16.7, 21) &&
+        !floorBounce(false, 50, -2.8, 30, 1.2, 16.7, 21) && !floorBounce(true, 80, -2.8, 40, -2.9, 16.7, 21) &&
+        !floorBounce(true, 180, -1.0, 172, 0.4, 16.7, 21) && floorBounce(true, 25, -0.5, 21, 0, 16.7, 21)
+    )");
+    check(!bounced.isError() && bounced.toBool(), "floor bounce is told from flight and a robot's top");
     qInfo("PR20 motion/contact regression checks passed");
 }

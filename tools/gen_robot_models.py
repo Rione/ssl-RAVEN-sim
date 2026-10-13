@@ -351,22 +351,28 @@ def ball_yaml_block(ball):
 
 
 def write_ball_ini(ini_path, ball):
-    """sim の ini の [BallModel] 節を置き換える。他の節には触らない。"""
+    """sim の ini の [BallModel] 節のうち、RAVEN の yaml から写す鍵 (BALL_KEY) を置き換える。節のほかの鍵
+    (床で跳ねたときの ChipDampingXy* など、RAVEN の ball_model に無いもの) と他の節には触らない。"""
     lines = ini_path.read_text(encoding='utf-8', errors='replace').splitlines()
-    block = ['[BallModel]'] + [f'{BALL_KEY[k]}={ball[k]}' for k in BALL_KEY if k in ball] + ['']
+    copied = set(BALL_KEY.values())
+    block = ['[BallModel]'] + [f'{BALL_KEY[k]}={ball[k]}' for k in BALL_KEY if k in ball]
     out, i, replaced = [], 0, False
     while i < len(lines):
         if lines[i].strip() == '[BallModel]':
-            out.extend(block)
             i += 1
+            kept = []
             while i < len(lines) and not lines[i].strip().startswith('['):
+                m = re.match(r'^([A-Za-z0-9_]+)\s*=', lines[i])
+                if lines[i].strip() and not (m and m.group(1) in copied):
+                    kept.append(lines[i])
                 i += 1
+            out.extend(block + kept + [''])
             replaced = True
             continue
         out.append(lines[i])
         i += 1
     if not replaced:
-        out.extend([''] + block)
+        out.extend([''] + block + [''])
     ini_path.write_text('\n'.join(out) + '\n', encoding='utf-8')
 
 

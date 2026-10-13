@@ -43,6 +43,7 @@ QtObject {
         dribbleInfo.isYellow = isYellow;
         dribbleInfo.radianBall = botRadianBall;
         dribbleInfo.distanceBall = 95;
+        ballCameDown = false;   // 捕った球は床で跳ねていない
         // ball.simulationEnabled = false;
         ball.reset(Qt.vector3d(100000, 0, 100000), Qt.vector3d(0, 0, 0));
         

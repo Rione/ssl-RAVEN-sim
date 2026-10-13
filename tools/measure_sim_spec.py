@@ -1196,6 +1196,98 @@ def scene_kick_slide(ctx, team='yellow', reps=3):
     return out
 
 
+# ---------------------------------------------------------------- チップの球が床で跳ねるときの横の速さ
+
+CHIP_AIR_Z_MM = 30.0    # 球の中心がこれより高ければ浮いている (sim は中心 30 mm より上では地面の摩擦を掛けない)
+
+
+def chip_hops(frames):
+    """チップを蹴った後のフレームから、浮いている区間ごとの横の速さを出す。横の速さは区間の中の隣り合うフレームの
+    横の速さの中央値 (sim は跳ねで落とした速さが 2 フレームほど遅れて出るので、区間の頭の 2 フレームは前の速さのまま。
+    直線を当てはめるとそれに引っぱられる)。跳ねた所の前後の区間の比が、その跳ねで横の速さが残った割合。
+    区間は球の中心が CHIP_AIR_Z_MM より上のフレームの続き。跳ねて床の近くにいる時間がフレームの間より短いと、床の
+    近くのフレームが無いことがあるので、高さが下りから上りに変わったフレーム (跳ねたところ) でも区切り、そのフレームは
+    どちらにも入れない。"""
+    pts = [(f.t, f.ball[0], f.ball[1], f.ball[2]) for f in frames if f.ball is not None]
+    k0 = next((k for k, p in enumerate(pts) if p[3] > CHIP_AIR_Z_MM), None)
+    if k0 is None or k0 < 1:
+        return {'error': '浮かなかった'}
+    t0, x0, y0 = pts[k0 - 1][0], pts[k0 - 1][1], pts[k0 - 1][2]
+    rel = [(t - t0, math.hypot(x - x0, y - y0), z) for t, x, y, z in pts[k0 - 1:]]
+    segs = []
+    cur = []
+    for k, r in enumerate(rel):
+        turned = 0 < k < len(rel) - 1 and rel[k - 1][2] > r[2] < rel[k + 1][2]
+        if r[2] > CHIP_AIR_Z_MM and not turned:
+            cur.append(r)
+        elif cur:
+            segs.append(cur)
+            cur = []
+    if cur:
+        segs.append(cur)
+    hops = []
+    for seg in segs:
+        if len(seg) < 3:
+            continue
+        steps = [(b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(seg, seg[1:]) if b[0] > a[0]]
+        if not steps:
+            continue
+        hops.append({'from_s': seg[0][0], 'to_s': seg[-1][0], 'to_mm': seg[-1][1],
+                     'top_mm': max(z for t, s, z in seg), 'horizontal_mm_s': median(steps)})
+    out = {'hops': hops}
+    if len(hops) >= 2:
+        out['first_landing_before_mm_s'] = hops[0]['horizontal_mm_s']
+        out['first_landing_after_mm_s'] = hops[1]['horizontal_mm_s']
+        out['first_landing_kept'] = hops[1]['horizontal_mm_s'] / hops[0]['horizontal_mm_s']
+        out['later_landings_kept'] = [b['horizontal_mm_s'] / a['horizontal_mm_s'] for a, b in zip(hops[1:], hops[2:])]
+    # 跳ね終えた後 (二度と浮かない所から) の地面の速さ: 0.1 s ごとの区間の傾き。地面の減速は下りてから 0.2〜1.0 s の
+    # 速さの傾き (下りた直後は最後の跳ねで落とした速さが 1〜2 刻み遅れて出るので外す)。
+    last_up = max((k for k, r in enumerate(rel) if r[2] > CHIP_AIR_Z_MM), default=None)
+    if last_up is not None and last_up + 1 < len(rel):
+        ground = rel[last_up + 1:]
+        t_down = ground[0][0]
+        speeds = []
+        k = 0
+        while k + 6 < len(ground):
+            line = fit_line([(t, s) for t, s, z in ground[k:k + 6]])
+            if line is not None:
+                speeds.append((ground[k + 3][0] - t_down, line[0]))
+            k += 6
+        if speeds:
+            out['ground_first_mm_s'] = speeds[0][1]
+        late = fit_line([(t, v) for t, v in speeds if 0.2 <= t <= 1.0 and v > 50.0])
+        if late is not None:
+            out['ground_decel_mm_s2'] = -late[0]
+    return out
+
+
+def scene_chip_bounce(ctx, team='yellow', reps=2):
+    """持った球を 45° のチップで蹴り、最初の着地の前後とその後の跳ねで横の速さがどれだけ残るかを測る。"""
+    ctx.park_all()
+    key = ('y' if team == 'yellow' else 'b') + '0'
+    x, y = -4500.0, 2500.0 if team == 'yellow' else -2500.0
+    speeds = [s for s in (3000.0, 4000.0, 5000.0) if s <= ctx.max_chip]
+    out = {}
+    for speed in speeds:
+        rows = []
+        for rep in range(reps):
+            held = ctx.give_ball(team, 0, x, y, 0.0)
+            ctx.wait(1.1)
+            mark = ctx.vision.mark()
+            fired = fire_kick(ctx, team, 0, key, speed, kick_angle_deg=45.0, dribble=True)
+            ctx.wait(3.0)
+            frames = ctx.vision.since(mark)
+            ctx.dump(f'chip_bounce_{speed:g}_{rep}', frames, team)
+            res = {'held_before_kick': held, 'fired': fired}
+            res.update(chip_hops(frames))
+            rows.append(res)
+        out[f'chip_{speed:g}_45deg'] = rows
+    kept = [r['first_landing_kept'] for rows in out.values() for r in rows if 'first_landing_kept' in r]
+    later = [v for rows in out.values() for r in rows for v in r.get('later_landings_kept', [])]
+    out['first_landing_kept_median'] = median(kept)
+    out['later_landings_kept_median'] = median(later)
+    return out
+
 SCENES = {
     'accel': scene_accel,
     'spin': scene_spin,
@@ -1207,6 +1299,7 @@ SCENES = {
     'ball_decel': scene_ball_decel,
     'direct': scene_direct,
     'kick_slide': scene_kick_slide,
+    'chip_bounce': scene_chip_bounce,
 }
 
 

@@ -134,6 +134,11 @@ Observer::Observer(QObject *parent) : QObject(parent), config(configFilePath(), 
     ballSwitchRatio = config.value("BallModel/KSwitch", 0.54).toFloat();
     ballNormalRestitution = config.value("BallModel/DirectKickNormalRestitution", 0.8).toFloat();
     ballTangentRetention = config.value("BallModel/DirectKickTangentRetention", 1.0).toFloat();
+    // 床で跳ねたとき横の速さが残る割合。SSL の球のモデル (ssl_vision_geometry.proto の SSL_BallModelChipFixedLoss) の
+    // damping_xy_first_hop / damping_xy_other_hops と同じもの。既定は RoboCup 2026 の会場の床で測られ、SSL-Vision が
+    // 配った値 (RoboCup-SSL/ssl-vision-processor の geometry-divA.yml、2026-07-18 の commit 97e3984)。
+    ballChipDampingXyFirstHop = config.value("BallModel/ChipDampingXyFirstHop", 0.55).toFloat();
+    ballChipDampingXyOtherHops = config.value("BallModel/ChipDampingXyOtherHops", 0.88).toFloat();
     // NOTE: no wall-clock simulation timer. Vision/actuation/feedback are driven
     // from updateObjects() once per physics frame (simulation time) — see the
     // comment there.

@@ -63,6 +63,10 @@ class Observer : public QObject {
     // ロボットに当たったときの跳ね返り (ball_model.direct_kick)。
     Q_PROPERTY(float ballNormalRestitution READ getBallNormalRestitution CONSTANT)
     Q_PROPERTY(float ballTangentRetention READ getBallTangentRetention CONSTANT)
+    // 床で跳ねたとき横の速さが残る割合 ([BallModel] ChipDampingXyFirstHop / ChipDampingXyOtherHops)。
+    // 1 つめは回っていない球 (蹴ってからまだ転がりに入っていない)、2 つめはもう転がる回転の付いた球。
+    Q_PROPERTY(float ballChipDampingXyFirstHop READ getBallChipDampingXyFirstHop CONSTANT)
+    Q_PROPERTY(float ballChipDampingXyOtherHops READ getBallChipDampingXyOtherHops CONSTANT)
     // 機体に対する球の速さがこれ以上だとドリブラは捕れない [mm/s] ([Physics] DribblerCatchMaxSpeedMmS)。
     Q_PROPERTY(float dribblerCatchMaxSpeedMmS READ getDribblerCatchMaxSpeedMmS CONSTANT)
     // 蹴ってから次を蹴れるまでの時間 [s] ([Physics] KickerRechargeSec)。0 ならいつでも蹴れる。
@@ -144,6 +148,8 @@ public:
     float getBallSwitchRatio() const { return ballSwitchRatio; }
     float getBallNormalRestitution() const { return ballNormalRestitution; }
     float getBallTangentRetention() const { return ballTangentRetention; }
+    float getBallChipDampingXyFirstHop() const { return ballChipDampingXyFirstHop; }
+    float getBallChipDampingXyOtherHops() const { return ballChipDampingXyOtherHops; }
     float getDribblerCatchMaxSpeedMmS() const { return dribblerCatchMaxSpeedMmS; }
     float getKickerRechargeSec() const { return kickerRechargeSec; }
 
@@ -317,6 +323,8 @@ private:
     float ballSwitchRatio = 2.0f / 3.0f;
     float ballNormalRestitution = 0.8f;
     float ballTangentRetention = 1.0f;
+    float ballChipDampingXyFirstHop = 0.55f;
+    float ballChipDampingXyOtherHops = 0.88f;
     float dribblerCatchMaxSpeedMmS = 1500.0f;
     float kickerRechargeSec = 1.0f;
 };

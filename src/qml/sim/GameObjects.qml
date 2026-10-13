@@ -95,6 +95,11 @@ Node {
     // Mass is in kg, the same unit as the robot bodies (2.5 kg): 46 g is 0.046, not 46.
     property real ballRadius: 21.0
     property real ballMass: 0.046
+    // 球の中心がこれより高ければ浮いている。浮いている球には地面の摩擦を掛けない (applyBallFriction)。床の跳ねを
+    // 数えるのも、ここより上から落ちてきた球だけ (applyFloorBounce)。
+    readonly property real ballInAirCentreMm: 30
+    // 前の床の跳ねの後で、球が浮いた所 (ballInAirCentreMm より上) から落ちてきたか。蹴り・置き直し・捕ったときに消す。
+    property bool ballCameDown: false
     // 機体の質量 (球と同じ kg)。球が板に当たると機体も押し返されるので、材質の反発の平均がそのまま
     // 見える反発にはならない (botMaterial)。
     property real robotMass: 2.5
@@ -960,6 +965,7 @@ Node {
             // The ball leaves the kicker with no spin; the slide phase spins it up.
             ballSpin = Qt.vector3d(0, 0, 0);
             ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
+            ballCameDown = false;
             kickLaunch = { velocity: Qt.vector3d(pendingKickVelocity.x / 1000.0, pendingKickVelocity.y / 1000.0,
                                                  pendingKickVelocity.z / 1000.0),
                            before: ballVelocity, appliedMs: simTimeMs };
@@ -981,7 +987,11 @@ Node {
         // then rolls (rolling resistance slowly bleeds off the rest), so it doesn't roll
         // forever off the field (and escape past the boundary walls into huge vision
         // coordinates).
-        if (!teleopActive && ballKnown)
+        if (!teleopActive && ballKnown && applyFloorBounce())
+            ballKnown = false;   // 跳ねた刻みの横の速さは跳ねで決めた。地面の摩擦は次の刻みから
+        // 浮いた所から落ちてくる球が床に着くところは跳ね (applyFloorBounce) が持つ。跳ねるまでは地面の摩擦を掛けない
+        // (着く直前に中心が 30 mm を下回った刻みで滑りの減速を掛けると、跳ねで残る割合がその分小さくなる)。
+        if (!teleopActive && ballKnown && !ballCameDown)
             applyBallFriction(ball, ballVelocity, timestep);
         preBallAngularPosition = ball.eulerRotation;
         ballReset = true;
@@ -1029,7 +1039,7 @@ Node {
             return;
         }
         // A chip in the air gets no ground friction until it lands.
-        if (ballBody.position.y > 30) {
+        if (ballBody.position.y > ballInAirCentreMm) {
             return;
         }
 
@@ -1123,6 +1133,34 @@ Node {
         ballBody.setAngularVelocity(ballSpin);
     }
 
+    // 床で跳ねた球の横の速さ。床と球の材質の摩擦は 0 (地面の接線力は applyBallFriction() が持つ) なので、PhysX のまま
+    // では跳ねても横の速さが落ちない (落ちるのは接地した刻みの滑りの減速だけで、1 回の跳ねで 0.98 倍ほど)。実物の球は
+    // 跳ねた瞬間の床の摩擦で前への勢いの一部が回転に移り、そこから転がる。SSL の球のモデル (SSL_BallModelChipFixedLoss)
+    // と同じく、跳ねるたびに横の速さへ残る割合を掛ける: まだ転がりに入っていない球 (蹴ってから回っていない) は
+    // [BallModel] ChipDampingXyFirstHop、もう転がっている球は ChipDampingXyOtherHops。跳ねた後の球は転がっている。
+    // 上の速さは PhysX の反発のまま。数えるのは ballInAirCentreMm より上から落ちてきた跳ねだけで、それより低い跳ねは
+    // 地面を転がる球として摩擦が扱う。跳ね返らずに床で止まった着地も跳ねに数える。跳ねを掛けたら true。
+    function applyFloorBounce() {
+        let y = ballPosition.y;
+        let vy = ballVelocity.y;
+        if (y > ballInAirCentreMm && vy < 0) {
+            ballCameDown = true;
+        }
+        let prevY = y - vy * lastBallTimestepMs;
+        if (!BallContact.floorBounce(ballCameDown, prevY, ballVelocityBefore.y, y, vy, lastBallTimestepMs, ballRadius)) {
+            return false;
+        }
+        ballCameDown = false;
+        let kept = ballRolling ? observer.ballChipDampingXyOtherHops : observer.ballChipDampingXyFirstHop;
+        let vx = ballVelocity.x * 1000.0;
+        let vz = ballVelocity.z * 1000.0;
+        ball.applyCentralImpulse(Qt.vector3d(ballMass * (kept - 1.0) * vx, 0, ballMass * (kept - 1.0) * vz));
+        ballRolling = true;
+        ballSpin = Qt.vector3d(kept * vz / ballRadius, ballSpin.y, -kept * vx / ballRadius);
+        ball.setAngularVelocity(ballSpin);
+        return true;
+    }
+
     function syncGameObjects(timestepMs) {
         let blueBotData = sync.updateBot(blue, false);
         let yellowBotData = sync.updateBot(yellow, true);
@@ -1156,6 +1194,7 @@ Node {
         ballSpin = Qt.vector3d(0, 0, 0);
         pendingKickVelocity = null;
         kickLaunch = null;
+        ballCameDown = false;
         ball.reset(scenePosition, Qt.vector3d(0, 0, 0));
         if (velocity !== null) {
             ball.setLinearVelocity(velocity);

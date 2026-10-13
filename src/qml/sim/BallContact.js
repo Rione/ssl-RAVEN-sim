@@ -27,3 +27,13 @@ function kickTookEffect(sample, launch, before) {
     var bx = sample.x - before.x, by = sample.y - before.y, bz = sample.z - before.z;
     return lx * lx + ly * ly + lz * lz < bx * bx + by * by + bz * bz;
 }
+
+// A bounce on the floor between the previous velocity sample and this one: the ball came down out of the air (cameDown)
+// and is no longer going down (up again, or stopped by the floor without a rebound), and the lower of the two positions
+// is within one step's travel of the floor, so it landed on the floor and not on a robot's top. Heights are the ball's
+// centre [mm]; vertical velocities are mm/ms (= m/s).
+function floorBounce(cameDown, prevY, prevVy, curY, curVy, dtMs, radius) {
+    if (!cameDown || !(curVy >= 0)) return false;
+    var reach = Math.max(Math.abs(prevVy), Math.abs(curVy)) * dtMs + 5;
+    return Math.min(prevY, curY) - radius <= reach;
+}
