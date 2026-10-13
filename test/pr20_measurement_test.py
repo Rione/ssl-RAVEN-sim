@@ -58,4 +58,45 @@ class KickSlideTest(unittest.TestCase):
         self.assertIn('error', m.analyze_kick_slide(None, self.frames(v0=0.0), 3000.0))
 
 
+
+class ChipHopsTest(unittest.TestCase):
+    """A chip at 45 deg along +x, sampled at 60 Hz. Each floor bounce keeps first / later of the horizontal speed
+    and 0.47 of the vertical one; hops below 200 mm/s stop."""
+    def frames(self, first, later, v=4000.0):
+        g, r, sub = 9810.0, 21.0, 10
+        dt = 1 / 600
+        vx = vz = v / 2 ** 0.5
+        x, z, t, bounces = 95.0, r, 0.0, 0
+        frames = [m.Frame(-3 / 60 + i / 60, (x, 0.0, z), {}, {0: (0.0, 0.0, 0.0)}) for i in range(3)]
+        for i in range(1, 600 * 3):
+            vz -= g * dt if vz != 0.0 else 0.0
+            x += vx * dt
+            z += vz * dt
+            if z < r:
+                z = r
+                up = -0.47 * vz
+                vx *= first if bounces == 0 else later
+                bounces += 1
+                vz = up if up > 200.0 else 0.0
+            t += dt
+            if i % sub == 0:
+                frames.append(m.Frame(t, (x, 0.0, z), {}, {0: (0.0, 0.0, 0.0)}))
+        return frames
+
+    def test_kept_fractions(self):
+        r = m.chip_hops(self.frames(0.55, 0.88))
+        self.assertAlmostEqual(r['first_landing_kept'], 0.55, delta=0.02)
+        self.assertTrue(r['later_landings_kept'])
+        for k in r['later_landings_kept']:
+            self.assertAlmostEqual(k, 0.88, delta=0.03)
+
+    def test_frictionless_floor(self):
+        r = m.chip_hops(self.frames(1.0, 1.0))
+        self.assertAlmostEqual(r['first_landing_kept'], 1.0, delta=0.01)
+
+    def test_not_chipped(self):
+        flat = [m.Frame(i / 60, (95.0 + 50.0 * i, 0.0, 21.0), {}, {0: (0.0, 0.0, 0.0)}) for i in range(60)]
+        self.assertIn('error', m.chip_hops(flat))
+
+
 if __name__ == '__main__': unittest.main()
