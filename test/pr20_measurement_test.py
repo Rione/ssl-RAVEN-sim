@@ -28,4 +28,34 @@ class ReboundTest(unittest.TestCase):
     def test_missing_samples(self):
         self.assertIn('error', m.analyze_rebound([], 'blue'))
 
+class KickSlideTest(unittest.TestCase):
+    """A ball kicked along +x at v0 from the mouth, sampled at 60 Hz: slide at a_slide down to k * v0, then roll."""
+    def frames(self, v0=3000.0, a_slide=3000.0, a_roll=260.0, k=0.64, slides=True):
+        dt, x, v, t = 1 / 60, 95.0, 0.0, 0.0
+        frames = [m.Frame(t, (x, 0.0, 21.0), {}, {0: (0.0, 0.0, 0.0)})]
+        for i in range(150):
+            if i == 3:
+                v = v0
+            elif v > 0:
+                a = a_slide if slides and v > k * v0 else a_roll
+                v = max(0.0, v - a * dt)
+            x += v * dt
+            t += dt
+            frames.append(m.Frame(t, (x, 0.0, 21.0), {}, {0: (0.0, 0.0, 0.0)}))
+        return frames
+
+    def test_sliding_kick(self):
+        # 4 m/s slides for 0.48 s, past the 0.1-0.4 s window
+        r = m.analyze_kick_slide(None, self.frames(v0=4000.0), 4000.0)
+        self.assertAlmostEqual(r['decel_0_1_to_0_4_s_mm_s2'], 3000.0, delta=100.0)
+        self.assertAlmostEqual(r['slide_end_speed_mm_s'], 2560.0, delta=60.0)
+
+    def test_kick_that_starts_rolling(self):
+        r = m.analyze_kick_slide(None, self.frames(v0=4000.0, slides=False), 4000.0)
+        self.assertAlmostEqual(r['decel_0_1_to_0_4_s_mm_s2'], 260.0, delta=30.0)
+
+    def test_no_kick(self):
+        self.assertIn('error', m.analyze_kick_slide(None, self.frames(v0=0.0), 3000.0))
+
+
 if __name__ == '__main__': unittest.main()

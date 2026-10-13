@@ -1075,6 +1075,127 @@ def scene_direct(ctx, team='blue'):
     return out
 
 
+# ---------------------------------------------------------------- 蹴った球が滑りから始まるか
+
+def kick_slide_case():
+    """(前の球の速さ [mm/s], 前の球を置く所の口からの距離 [mm], 蹴りの速さ [mm/s])。KICK_SLIDE=4000:2000:3000 で替える。
+    既定は config_sumatra.ini で、前の球が口に着く前に転がりに入り (4 m/s の滑りは 1.6 m で終わる)、それより遅く蹴る組。
+    蹴りの滑りは 3 m/s から 0.36 s 続くので、0.1〜0.4 s の減速で滑りか転がりかが分かる。"""
+    prev, dist, kick = (float(s) for s in os.environ.get('KICK_SLIDE', '4000:2000:3000').split(':'))
+    return prev, dist, kick
+
+
+def fire_kick(ctx, team, rid, key, kick_mm_s, kick_angle_deg=0.0, dribble=False, angular=0.0, timeout=1.0):
+    """蹴りの指令を出し、sim が蹴った (標準出力の [kick] ... fires) ところで指令を下ろす。蹴ったら True。
+    angular [rad/s] は蹴るまで回し続ける速さ。"""
+    log_from = len(ctx.sim.log_text())
+    ctx.cmd.set(team, rid, angular=angular, kick=kick_mm_s / 1000.0, kick_angle_deg=kick_angle_deg, dribble=dribble)
+    end = time.time() + timeout
+    fired = False
+    while time.time() < end:
+        if ctx.kicks_fired(log_from, key) > 0:
+            fired = True
+            break
+        time.sleep(0.01)
+    ctx.cmd.set(team, rid)
+    return fired
+
+
+def analyze_kick_slide(ctx, frames, kick_mm_s):
+    """蹴った後の球の速さから、蹴り出しの速さ・0.1〜0.4 s の減速・滑りの終わりの速さを出す。
+    蹴った時刻は、球の速さが蹴りの速さの半分を越えた最初のフレーム。滑りの終わりは速さを 2 本の直線
+    (滑り → 転がり) に当てはめた折れ点。滑らずに転がり始めた球は 2 本の傾きがどちらも転がりの減速になる。"""
+    sp, pts = ball_speed_series(frames)
+    t_k = next((t for t, v, a, b in sp if v > 0.5 * kick_mm_s), None)
+    if t_k is None:
+        return {'error': '球が出なかった'}
+    after = [(t - t_k, v) for t, v, a, b in sp if t >= t_k]
+    out = {}
+    window = fit_line([(t, v) for t, v in after if 0.1 <= t <= 0.4])
+    if window:
+        out['decel_0_1_to_0_4_s_mm_s2'] = -window[0]
+    series = [(t, v) for t, v in after if t >= 0.03 and v > 50.0]
+    best = fit_two_phase(series)
+    if best is not None:
+        err, k, slide, roll = best
+        out['launch_mm_s'] = slide[1]
+        out['first_line_decel_mm_s2'] = -slide[0]
+        out['second_line_decel_mm_s2'] = -roll[0]
+        if slide[0] != roll[0]:
+            t_switch = (roll[1] - slide[1]) / (slide[0] - roll[0])
+            v_switch = slide[0] * t_switch + slide[1]
+            out['slide_end_s'] = t_switch
+            out['slide_end_speed_mm_s'] = v_switch
+            if slide[1] > 0:
+                out['slide_end_ratio'] = v_switch / slide[1]
+    return out
+
+
+# held_turning で持ったまま回る速さと、回し始めてから蹴るまで。試合で滑らずに転がり出した蹴りは、持った台が動きながら蹴っていた
+KICK_SLIDE_TURN_RAD_S = 3.0
+KICK_SLIDE_TURN_S = 0.4
+
+
+def scene_kick_slide(ctx, team='yellow', reps=3):
+    """蹴った球が、どの蹴り方でも自分の蹴り出しの速さから滑り始めるか。4 通りを reps 回ずつ交互に蹴る。
+      free: 口の前に止めて置いた球を、ドリブラを回さずに蹴る (比べる元)
+      held_after_faster: 前の球 (蹴りより速く置いた球) を転がしてきて口で捕り、1 s 持ってから、それより遅く蹴る
+      held_still: 口の前に止めて置いた球を捕り、1 s 持ってから蹴る
+      held_turning: 口の前に止めて置いた球を捕り、持ったまま回りながら蹴る (蹴る向きが +x になるよう回し始める)
+    模型の値: 滑りの減速 = AccSlideMmS2、滑りの終わりの速さ = KSwitch × 蹴り出しの速さ。"""
+    prev, dist, kick = kick_slide_case()
+    ctx.park_all()
+    key = ('y' if team == 'yellow' else 'b') + '0'
+    x, y = -4500.0, 2500.0 if team == 'yellow' else -2500.0
+    out = {'case': {'prev_mm_s': prev, 'prev_from_mouth_mm': dist, 'kick_mm_s': kick},
+           'model': {'slide_decel_mm_s2': ctx.ball_slide, 'roll_decel_mm_s2': ctx.ball_roll,
+                     'slide_end_speed_mm_s': ctx.ball_switch * kick * ctx.kicker_friction,
+                     'launch_mm_s': kick * ctx.kicker_friction}}
+    names = ('free', 'held_after_faster', 'held_still', 'held_turning')
+    for name in names:
+        out[name] = []
+    for rep in range(reps):
+        for name in names:
+            ctx.place(team, 0, x, y, 0.0)
+            held = None
+            if name == 'free':
+                ctx.cmd.teleport(ball=(x + MOUTH_MM + 5.0, y))
+                ctx.wait(0.3)
+            elif name == 'held_after_faster':
+                ctx.cmd.set(team, 0, dribble=True)
+                ctx.cmd.teleport(ball=(x + MOUTH_MM + dist, y, -prev, 0.0))
+                held = wait_until_held(ctx, team, 0, 4.0)
+                ctx.wait(1.0)
+            elif name == 'held_still':
+                held = ctx.give_ball(team, 0, x, y, 0.0)
+                ctx.wait(1.0)
+            else:
+                held = ctx.give_ball(team, 0, x, y, -KICK_SLIDE_TURN_RAD_S * KICK_SLIDE_TURN_S)
+                ctx.wait(1.0)
+            ctx.wait(1.1)   # キッカーの再充電 (config_v2.ini は 1 s) を待つ。ドリブラは回したまま
+            angular = 0.0
+            if name == 'held_turning':
+                angular = KICK_SLIDE_TURN_RAD_S
+                ctx.cmd.set(team, 0, angular=angular, dribble=True)
+                ctx.wait(KICK_SLIDE_TURN_S)
+            mark = ctx.vision.mark()
+            fired = fire_kick(ctx, team, 0, key, kick, dribble=name != 'free', angular=angular)
+            ctx.wait(2.5)
+            frames = ctx.vision.since(mark)
+            ctx.dump(f'kick_slide_{name}_{rep}', frames, team)
+            res = {'held_before_kick': held, 'fired': fired}
+            res.update(analyze_kick_slide(ctx, frames, kick * ctx.kicker_friction))
+            out[name].append(res)
+    for name in names:
+        rows = [r for r in out[name] if 'decel_0_1_to_0_4_s_mm_s2' in r]
+        out[name + '_median'] = {
+            'decel_0_1_to_0_4_s_mm_s2': median([r['decel_0_1_to_0_4_s_mm_s2'] for r in rows]),
+            'slide_end_speed_mm_s': median([r['slide_end_speed_mm_s'] for r in rows if 'slide_end_speed_mm_s' in r]),
+            'launch_mm_s': median([r['launch_mm_s'] for r in rows if 'launch_mm_s' in r]),
+        }
+    return out
+
+
 SCENES = {
     'accel': scene_accel,
     'spin': scene_spin,
@@ -1085,6 +1206,7 @@ SCENES = {
     'kick_limit': scene_kick_limit,
     'ball_decel': scene_ball_decel,
     'direct': scene_direct,
+    'kick_slide': scene_kick_slide,
 }
 
 

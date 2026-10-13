@@ -83,6 +83,14 @@ Node {
     // 置いた先が機体と重なっていると、押し出されて置いた場所の近くに現れないことがある。そのときは
     // この時間で着いたものとみなす (reset() が効くのは 1〜2 刻み後なので、それより十分長い)。
     readonly property real placementLandingTimeoutMs: 250
+    // 蹴ったが、まだ球の動きに出ていない蹴り {velocity [m/s、シーンの軸], before [蹴る前の速度 m/s], appliedMs}。
+    // setLinearVelocity() で掛けた速度は、掛けた次の刻みに測る位置にはまだ出ない (出るのはその次の刻み)。その刻みの
+    // 速度を摩擦に食わせると、回っている機体に押されて少しだけ動いている球は「切り替えの速さより遅い = もう転がって
+    // いる」になり、次の刻みで蹴りの速さが出ても蹴り出しの速さと同じなので滑りに戻らない (蹴った球が滑らずに転がり
+    // 出す)。測った速度が蹴る前の速度より蹴りの速度に近くなるまで摩擦を掛けず、そこから蹴りの速さで滑り始める。
+    property var kickLaunch: null
+    // 蹴りがこの時間たっても球の動きに出ないとき (蹴った先がすぐ機体だった) は待つのをやめる。効くのは 1〜2 刻み後。
+    readonly property real kickLaunchTimeoutMs: 250
     // Ball physical constants (scene units are mm). 42 mm diameter, ~46 g golf ball.
     // Mass is in kg, the same unit as the robot bodies (2.5 kg): 46 g is 0.046, not 46.
     property real ballRadius: 21.0
@@ -952,9 +960,22 @@ Node {
             // The ball leaves the kicker with no spin; the slide phase spins it up.
             ballSpin = Qt.vector3d(0, 0, 0);
             ball.setAngularVelocity(Qt.vector3d(0, 0, 0));
+            kickLaunch = { velocity: Qt.vector3d(pendingKickVelocity.x / 1000.0, pendingKickVelocity.y / 1000.0,
+                                                 pendingKickVelocity.z / 1000.0),
+                           before: ballVelocity, appliedMs: simTimeMs };
             pendingKickVelocity = null;
-            // この刻みで測った速度は蹴る前のもの。摩擦に食わせると止まった球として扱われる。
-            ballKnown = false;
+        }
+        // 蹴りが球の動きに出るまでの刻みの速度は蹴る前の球のもの。摩擦を掛けず、滑りの状態は蹴りのときのままにする。
+        if (kickLaunch !== null && ballKnown) {
+            if (BallContact.kickTookEffect(ballVelocity, kickLaunch.velocity, kickLaunch.before)) {
+                // 1 つ前の速度は蹴る前のもの (持っていた球なら捕る前のもの)。衝突の見分けは蹴った後の速度どうしで比べる。
+                prevBallVelocity = Qt.vector3d(ballVelocity.x, ballVelocity.y, ballVelocity.z);
+                kickLaunch = null;
+            } else if (simTimeMs - kickLaunch.appliedMs < kickLaunchTimeoutMs) {
+                ballKnown = false;
+            } else {
+                kickLaunch = null;
+            }
         }
         // Friction: a no-spin kick slides (kinetic friction decelerates + spins it up),
         // then rolls (rolling resistance slowly bleeds off the rest), so it doesn't roll
@@ -1134,6 +1155,7 @@ Node {
         prevBallVelocity = Qt.vector3d(0, 0, 0);
         ballSpin = Qt.vector3d(0, 0, 0);
         pendingKickVelocity = null;
+        kickLaunch = null;
         ball.reset(scenePosition, Qt.vector3d(0, 0, 0));
         if (velocity !== null) {
             ball.setLinearVelocity(velocity);
