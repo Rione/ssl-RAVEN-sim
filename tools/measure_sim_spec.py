@@ -1202,8 +1202,9 @@ CHIP_AIR_Z_MM = 30.0    # 球の中心がこれより高ければ浮いている
 
 
 def chip_hops(frames):
-    """チップを蹴った後のフレームから、浮いている区間ごとの横の速さを出す。横の速さは区間の中の
-    打った点からの横の距離を時刻に直線で当てはめた傾き。跳ねた所の前後の区間の比が、その跳ねで横の速さが残った割合。
+    """チップを蹴った後のフレームから、浮いている区間ごとの横の速さを出す。横の速さは区間の中の隣り合うフレームの
+    横の速さの中央値 (sim は跳ねで落とした速さが 2 フレームほど遅れて出るので、区間の頭の 2 フレームは前の速さのまま。
+    直線を当てはめるとそれに引っぱられる)。跳ねた所の前後の区間の比が、その跳ねで横の速さが残った割合。
     区間は球の中心が CHIP_AIR_Z_MM より上のフレームの続き。跳ねて床の近くにいる時間がフレームの間より短いと、床の
     近くのフレームが無いことがあるので、高さが下りから上りに変わったフレーム (跳ねたところ) でも区切り、そのフレームは
     どちらにも入れない。"""
@@ -1228,11 +1229,11 @@ def chip_hops(frames):
     for seg in segs:
         if len(seg) < 3:
             continue
-        line = fit_line([(t, s) for t, s, z in seg])
-        if line is None:
+        steps = [(b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(seg, seg[1:]) if b[0] > a[0]]
+        if not steps:
             continue
         hops.append({'from_s': seg[0][0], 'to_s': seg[-1][0], 'to_mm': seg[-1][1],
-                     'top_mm': max(z for t, s, z in seg), 'horizontal_mm_s': line[0]})
+                     'top_mm': max(z for t, s, z in seg), 'horizontal_mm_s': median(steps)})
     out = {'hops': hops}
     if len(hops) >= 2:
         out['first_landing_before_mm_s'] = hops[0]['horizontal_mm_s']
