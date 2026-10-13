@@ -18,3 +18,12 @@ function incomingVelocity(samples, px, pz, fx, fz, maxNormalDelta) {
 function canRecover(ageMs, relativeNormalSpeed, pendingLaunch) {
     return !pendingLaunch && ageMs >= 150 && relativeNormalSpeed <= 20;
 }
+
+// A kick has reached the ball: this velocity sample is nearer the kick's launch velocity than the ball's velocity
+// before the kick. The physics applies a velocity a step after it is set, so the first samples after a kick can
+// still be the ball before it. All three are {x, y, z} in the same unit.
+function kickTookEffect(sample, launch, before) {
+    var lx = sample.x - launch.x, ly = sample.y - launch.y, lz = sample.z - launch.z;
+    var bx = sample.x - before.x, by = sample.y - before.y, bz = sample.z - before.z;
+    return lx * lx + ly * ly + lz * lz < bx * bx + by * by + bz * bz;
+}

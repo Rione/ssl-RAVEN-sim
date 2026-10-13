@@ -83,5 +83,16 @@ int main(int argc, char **argv) {
         !canRecover(100,0,false) && !canRecover(200,100,false) && !canRecover(200,0,true)
     )");
     check(!result.isError() && result.toBool(), "incoming speed and soft-kick recovery");
+    // The sample after a kick that the physics has not applied yet is the ball pushed by a turning robot (0.036 m/s),
+    // not the 3 m/s launch. The next sample is the launch. A kick back against the incoming ball is told apart too.
+    auto kicked = js.evaluate(R"(
+        var launch = {x:3,y:0,z:0}, pushed = {x:0.01,y:0,z:0.034}, before = {x:0.0,y:0,z:0.03};
+        !kickTookEffect(pushed, launch, before) && !kickTookEffect(before, launch, before) &&
+        kickTookEffect({x:3.0,y:0,z:0.001}, launch, before) &&
+        kickTookEffect({x:-2,y:0,z:0}, {x:-2.1,y:0,z:0}, {x:1.5,y:0,z:0}) &&
+        !kickTookEffect({x:1.4,y:0,z:0}, {x:-2.1,y:0,z:0}, {x:1.5,y:0,z:0}) &&
+        kickTookEffect({x:2.1,y:2.0,z:0}, {x:2.12,y:2.12,z:0}, {x:0,y:0,z:0})
+    )");
+    check(!kicked.isError() && kicked.toBool(), "kick is taken as launched only once the samples show it");
     qInfo("PR20 motion/contact regression checks passed");
 }
